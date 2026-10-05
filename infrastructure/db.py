@@ -1,14 +1,25 @@
 import os
 import enum
 from datetime import datetime
-from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, Enum, ForeignKey, Text, JSON, select, literal
+from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Boolean, DateTime, Enum, ForeignKey, Text, JSON, select, literal, event
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship, aliased
+from sqlalchemy.pool import StaticPool
 
 # Allow overriding for test suites, default to in-memory SQLite for seamless testing when Docker is down
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///:memory:")
 
 # Initialize explicit engine
-engine = create_engine(DATABASE_URL, echo=False)
+if DATABASE_URL.startswith("sqlite"):
+    # StaticPool shares ONE connection across threads so the in-memory DB is visible
+    # to FastAPI's worker threads; fine for local dev/tests, use Postgres for anything concurrent.
+    engine = create_engine(DATABASE_URL, echo=False, poolclass=StaticPool, connect_args={"check_same_thread": False})
+
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, _):
+        # SQLite ignores foreign keys unless asked; keep it as strict as Postgres
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+else:
+    engine = create_engine(DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
