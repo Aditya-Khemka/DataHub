@@ -1,7 +1,8 @@
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from infrastructure.db import Base, Commit, Tree, TreeEntry, ObjectType, Branch, Blob, Metadata, get_commit_history, get_tree_closure
+from sqlalchemy.exc import IntegrityError
+from infrastructure.db import Base, Commit, Tree, TreeEntry, ObjectType, Branch, Chunk, File, FileChunk, Metadata, get_commit_history, get_tree_closure, advance_branch, insert_ignore
 
 @pytest.fixture
 def session():
@@ -47,22 +48,19 @@ def test_commit_history_recursive_cte(session):
 def test_tree_closure_recursive_cte(session):
     """Verifies that flat and nested directory pointers properly drill downward strictly yielding scalar Blobs (Files)."""
     
-    # Setup a nested structure: Root Tree -> [Blob 1, (SubTree -> [Blob 2])]
-    
+    # Setup a nested structure: Root Tree -> [File 1, (SubTree -> [File 2])]
+
     # 1. Establish Hash mappings natively
     t_root = Tree(tree_hash="root_tree")
     t_sub = Tree(tree_hash="sub_tree")
-    
-    b1 = Blob(blob_hash="blob_1", size_bytes=100)
-    b2 = Blob(blob_hash="blob_2", size_bytes=50)
-    
-    session.add_all([t_root, t_sub, b1, b2])
-    
+
+    session.add_all([t_root, t_sub])
+
     # 2. Map their logical connections using polymorphic typing
-    root_file_entry = TreeEntry(tree_hash="root_tree", name="file1.txt", object_hash="blob_1", object_type=ObjectType.blob)
+    root_file_entry = TreeEntry(tree_hash="root_tree", name="file1.txt", object_hash="blob_1", object_type=ObjectType.file)
     root_folder_entry = TreeEntry(tree_hash="root_tree", name="folder", object_hash="sub_tree", object_type=ObjectType.tree)
-    
-    sub_file_entry = TreeEntry(tree_hash="sub_tree", name="file2.txt", object_hash="blob_2", object_type=ObjectType.blob)
+
+    sub_file_entry = TreeEntry(tree_hash="sub_tree", name="file2.txt", object_hash="blob_2", object_type=ObjectType.file)
     
     session.add_all([root_file_entry, root_folder_entry, sub_file_entry])
     session.commit()
@@ -107,3 +105,28 @@ def test_branch_management(session):
     # 4. Rigorous verification rejecting blind traversals
     with pytest.raises(ValueError):
         get_branch_history(session, "non_existent_branch_fatal_error")
+
+def test_advance_branch_compare_and_swap(session):
+    """First commit creates the branch; later moves only succeed from the expected head."""
+    session.add(Tree(tree_hash="t"))
+    session.add_all([Commit(commit_hash=h, tree_hash="t", author="a", message="m") for h in ("c1", "c2", "c3")])
+    session.flush()
+
+    assert advance_branch(session, "main", None, "c1")        # first commit
+    assert not advance_branch(session, "main", None, "c2")    # someone else already created it
+    assert advance_branch(session, "main", "c1", "c2")        # normal fast-forward
+    assert not advance_branch(session, "main", "c1", "c3")    # stale head -> rejected
+    assert session.get(Branch, "main").commit_hash == "c2"
+
+def test_insert_ignore_skips_existing(session):
+    rows = [{"chunk_hash": "a", "size_bytes": 1}, {"chunk_hash": "b", "size_bytes": 2}]
+    assert insert_ignore(session, Chunk, rows) == 2
+    assert insert_ignore(session, Chunk, rows + [{"chunk_hash": "c", "size_bytes": 3}]) == 1
+    assert session.query(Chunk).count() == 3
+
+def test_file_chunk_requires_existing_chunk(session):
+    """Foreign keys are enforced on SQLite too (deferred, so checked at commit), so a file can't reference a missing chunk."""
+    session.add(File(file_hash="f", size_bytes=1, chunker="test"))
+    session.add(FileChunk(file_hash="f", seq=0, chunk_hash="missing"))
+    with pytest.raises(IntegrityError):
+        session.commit()

@@ -103,7 +103,7 @@ async def create_commit(payload: dict, session: Session = Depends(get_db_session
             )
         )
 
-        if object_type == ObjectType.blob:
+        if object_type == ObjectType.file:
             existing_meta = session.query(Metadata).filter_by(target_hash=object_hash).first()
             if not existing_meta:
                 mime_type, _ = mimetypes.guess_type(name)

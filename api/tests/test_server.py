@@ -51,7 +51,7 @@ def test_create_commit_with_tree_entries():
         "author": "Test Author",
         "message": "Commit with entries",
         "entries": [
-            {"name": "data.csv", "object_hash": "blob_hash_1", "object_type": "blob"},
+            {"name": "data.csv", "object_hash": "blob_hash_1", "object_type": "file"},
             {"name": "subdir", "object_hash": "tree_hash_2", "object_type": "tree"}
         ]
     }
