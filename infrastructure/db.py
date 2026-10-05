@@ -192,19 +192,6 @@ def get_tree_closure(session, start_tree_hash: str):
 # Branch Pointers Logic
 # =======================
 
-def update_branch(session, branch_name: str, target_commit_hash: str):
-    """
-    Creates or updates a human-readable branch pointer linearly managing the DAG heads.
-    """
-    branch = session.query(Branch).filter_by(name=branch_name).first()
-    if branch:
-        branch.commit_hash = target_commit_hash
-    else:
-        branch = Branch(name=branch_name, commit_hash=target_commit_hash)
-        session.add(branch)
-    session.commit()
-    return branch
-
 def advance_branch(session, branch_name: str, expected_hash, new_hash: str) -> bool:
     """
     Compare-and-swap for a branch pointer: moves it to new_hash only if it still points at

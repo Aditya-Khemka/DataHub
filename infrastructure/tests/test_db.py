@@ -74,18 +74,17 @@ def test_tree_closure_recursive_cte(session):
 
 def test_branch_management(session):
     """Verifies that Branch pointers correctly manipulate the DAG heads and properly bridge CTE retrievals."""
-    from infrastructure.db import update_branch, get_branch_history
-    
+    from infrastructure.db import get_branch_history
+
     # Setup base topological map
     t = Tree(tree_hash="tree-branch")
     c1 = Commit(commit_hash="hash-branch-1", tree_hash="tree-branch", author="Test", message="Init")
     session.add_all([t, c1])
     session.commit()
-    
+
     # 1. Create a raw new branch pointer
-    branch = update_branch(session, "experiment-1", "hash-branch-1")
-    assert branch.name == "experiment-1"
-    assert branch.commit_hash == "hash-branch-1"
+    assert advance_branch(session, "experiment-1", None, "hash-branch-1")
+    assert session.get(Branch, "experiment-1").commit_hash == "hash-branch-1"
     
     # 2. Extract entire historical CTE lineage directly through the pointer
     history = get_branch_history(session, "experiment-1")
@@ -97,7 +96,7 @@ def test_branch_management(session):
     session.add(c2)
     session.commit()
     
-    update_branch(session, "experiment-1", "hash-branch-2")
+    assert advance_branch(session, "experiment-1", "hash-branch-1", "hash-branch-2")
     history_new = get_branch_history(session, "experiment-1")
     assert len(history_new) == 2
     assert history_new[0]["commit_hash"] == "hash-branch-2"

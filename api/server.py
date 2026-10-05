@@ -1,18 +1,23 @@
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
-from sqlalchemy.orm import Session
-import os
+import tempfile
+from typing import Dict, List, Optional
 
-# Import contracts from Module 1 (Database) and Module 2 (Storage)
-from infrastructure.db import SessionLocal, Commit, Tree, TreeEntry, ObjectType, Metadata, Branch, update_branch, get_branch_history, init_db
-from storage.engine import put_blob, BLOB_DIR
-from metadata.extractor import extract_metrics
+from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from core import chunker, repo
+from infrastructure.db import SessionLocal, Branch, get_branch_history, init_db
 from query.parser import build_filter, execute_query
-import mimetypes
 
 # Initialize database schemas
 init_db()
 
 app = FastAPI(title="DataHub Node API")
+
+MAX_BATCH = 10_000  # hashes per existence check
+
 
 # Dependency to get DB session
 def get_db_session():
@@ -22,109 +27,100 @@ def get_db_session():
     finally:
         db.close()
 
-@app.get("/check_hash/{blob_hash}")
-async def check_hash(blob_hash: str):
-    """Checks whether a blob already exists to avoid redundant uploads from CLI."""
-    blob_path = os.path.join(BLOB_DIR, blob_hash)
-    return {"exists": os.path.exists(blob_path)}
 
-@app.post("/blobs/")
-async def upload_blob(file: UploadFile = File(...)):
-    """
-    Routes Python's UploadFile StreamingBody straight into the put_blob logic
-    without stopping in RAM. Returns the inserted hash locally.
-    """
-    # Specifically passing the low-level spooling file object to avoid loading into RAM
-    hash_str = put_blob(file.file)
-    return {"blob_hash": hash_str}
+# every ValueError becomes a 400; narrow to a dedicated exception if internal bugs start surfacing as 400s
+@app.exception_handler(ValueError)
+async def bad_request(_, exc):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(repo.Conflict)
+async def conflict(_, exc):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+class HashList(BaseModel):
+    hashes: List[str] = Field(max_length=MAX_BATCH)
+
+
+class ChunkRef(BaseModel):
+    hash: str
+    length: int
+
+
+class FileRecord(BaseModel):
+    file_hash: str
+    size: int
+    chunker: str
+    chunks: List[ChunkRef]
+
+
+class FilesPayload(BaseModel):
+    files: List[FileRecord]
+
+
+class CommitPayload(BaseModel):
+    parent_hash: Optional[str] = None
+    files: Dict[str, str]  # {"dir/name.csv": file_hash}
+    author: str
+    message: str
+    time: str  # core.objects.format_time(); part of the hash, so a retry reproduces the same commit
+
+
+@app.post("/chunks/missing")
+def chunks_missing(payload: HashList, session: Session = Depends(get_db_session)):
+    """Which of these chunks does the server still need? One call instead of one per chunk."""
+    return {"missing": repo.missing_chunks(session, payload.hashes)}
+
+
+@app.put("/chunks/{chunk_hash}")
+async def upload_chunk(chunk_hash: str, request: Request, session: Session = Depends(get_db_session)):
+    """Raw chunk bytes as the body. Size is capped, so an oversized upload never fills RAM."""
+    buffer = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+    size = 0
+    async for piece in request.stream():
+        size += len(piece)
+        if size > chunker.MAX_SIZE:
+            buffer.close()
+            raise HTTPException(status_code=413, detail=f"Chunk exceeds {chunker.MAX_SIZE} bytes")
+        buffer.write(piece)
+    buffer.seek(0)
+    with buffer:
+        await run_in_threadpool(repo.save_chunk, session, chunk_hash, buffer)
+    return {"stored": chunk_hash}
+
+
+@app.post("/files/exists")
+def files_exist(payload: HashList, session: Session = Depends(get_db_session)):
+    """Which of these whole files are already recorded? Lets a client skip chunking unchanged files."""
+    return {"existing": sorted(repo.has_files(session, payload.hashes))}
+
+
+@app.post("/files/")
+def register_files(payload: FilesPayload, session: Session = Depends(get_db_session)):
+    """Records files as ordered chunk lists; every claim is verified against the stored chunks."""
+    for f in payload.files:
+        repo.register_file(session, f.file_hash, f.size, f.chunker, [(c.hash, c.length) for c in f.chunks])
+    return {"registered": [f.file_hash for f in payload.files]}
+
 
 @app.post("/commit/")
-async def create_commit(payload: dict, session: Session = Depends(get_db_session)):
-    """
-    Accepts rigid Tree Entry JSON payloads representing the newest snapshot.
-    Leverages Abinav's Schema directly injecting Commits logically.
-    """
-    commit_hash = payload.get("commit_hash")
-    tree_hash = payload.get("tree_hash")
-    parent_hash = payload.get("parent_hash")
-    author = payload.get("author", "unknown")
-    message = payload.get("message", "")
-    entries = payload.get("entries", payload.get("tree_entries", []))
-    
-    if not commit_hash or not tree_hash:
-        raise HTTPException(status_code=400, detail="commit_hash and tree_hash are required")
-        
-    # Check if the commit already exists
-    existing_commit = session.query(Commit).filter(Commit.commit_hash == commit_hash).first()
-    if existing_commit:
-        update_branch(session, "main", commit_hash)
-        # We don't rollback but commit the branch update
-        session.commit()
-        return {"status": "success", "commit_hash": commit_hash, "message": "Commit already exists"}
-
-    # Create the top-level tree if it doesn't already exist
-    existing_tree = session.query(Tree).filter(Tree.tree_hash == tree_hash).first()
-    if not existing_tree:
-        new_tree = Tree(tree_hash=tree_hash)
-        session.add(new_tree)
-        session.flush() # Ensure tree is created before commit
-        
-    # Create the commit record
-    new_commit = Commit(
-        commit_hash=commit_hash,
-        tree_hash=tree_hash,
-        parent_hash=parent_hash,
-        author=author,
-        message=message
+def create_commit(payload: CommitPayload, session: Session = Depends(get_db_session)):
+    """The server builds the Merkle trees from the path list itself; 409 if main moved since parent_hash."""
+    commit_hash = repo.create_commit(
+        session, payload.parent_hash, payload.files, payload.author, payload.message, payload.time
     )
-    
-    session.add(new_commit)
-
-    # Create optional tree entries if provided by the push lifecycle payload
-    for entry in entries:
-        name = entry.get("name")
-        object_hash = entry.get("object_hash")
-        object_type_raw = entry.get("object_type")
-
-        if not name or not object_hash or not object_type_raw:
-            raise HTTPException(status_code=400, detail="Each tree entry requires name, object_hash, and object_type")
-
-        try:
-            object_type = ObjectType(object_type_raw)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid object_type: {object_type_raw}") from exc
-
-        session.add(
-            TreeEntry(
-                tree_hash=tree_hash,
-                name=name,
-                object_hash=object_hash,
-                object_type=object_type
-            )
-        )
-
-        if object_type == ObjectType.file:
-            existing_meta = session.query(Metadata).filter_by(target_hash=object_hash).first()
-            if not existing_meta:
-                mime_type, _ = mimetypes.guess_type(name)
-                mime_type = mime_type or "application/octet-stream"
-                blob_path = os.path.join(BLOB_DIR, object_hash)
-                metrics = extract_metrics(blob_path, mime_type)
-                session.add(Metadata(target_hash=object_hash, stats=metrics))
-    
-    # Push commit before updating branch to satisfy foreign key
-    session.flush()
-
-    # Update branch pointer
-    update_branch(session, "main", commit_hash)
-
-    try:
-        session.commit()
-    except Exception as e:
-        session.rollback()
-        raise e
-        
     return {"status": "success", "commit_hash": commit_hash}
+
+
+@app.get("/branches/{name}")
+def get_branch(name: str, session: Session = Depends(get_db_session)):
+    """Current head of a branch; clients use it as the parent of their next commit."""
+    branch = session.get(Branch, name)
+    if branch is None:
+        raise HTTPException(status_code=404, detail=f"Branch '{name}' does not exist")
+    return {"name": branch.name, "commit_hash": branch.commit_hash}
+
 
 @app.get("/log")
 async def get_log(session: Session = Depends(get_db_session)):
@@ -145,4 +141,3 @@ async def query_metadata(payload: dict, session: Session = Depends(get_db_sessio
         return {"results": [{"target_hash": r[0].target_hash, "stats": r[0].stats} for r in results]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-

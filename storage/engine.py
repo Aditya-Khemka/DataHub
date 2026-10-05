@@ -7,7 +7,6 @@ from core.chunker import MAX_SIZE
 from core.objects import is_valid_hash
 
 BLOB_DIR = os.getenv("BLOB_DIR", "blobs/")
-CHUNK_SIZE = 8192          # I/O buffer size for put_blob/get_blob
 READ_SIZE = 1024 * 1024    # I/O buffer size for content chunks (up to MAX_SIZE each)
 
 # Ensure the BLOB_DIR exists
@@ -72,47 +71,3 @@ def get_chunk(chunk_hash: str) -> Generator[bytes, None, None]:
     with open(path, "rb") as f:
         while piece := f.read(READ_SIZE):
             yield piece
-
-def put_blob(data_stream: BinaryIO) -> str:
-    """Reads a data stream, hashes via SHA-256 in 2 passes, writes locally, returns the hash."""
-    hasher = hashlib.sha256()
-    
-    # Pass 1: Read the stream chunk by chunk to compute the SHA-256 hash without loading into RAM
-    while True:
-        chunk = data_stream.read(CHUNK_SIZE)
-        if not chunk:
-            break
-        hasher.update(chunk)
-        
-    final_hash = hasher.hexdigest()
-    blob_path = os.path.join(BLOB_DIR, final_hash)
-    
-    # If the blob already exists, simply return the hash (Deduplication)
-    if os.path.exists(blob_path):
-        return final_hash
-        
-    # Pass 2: Reset the stream and write the payload to disk
-    data_stream.seek(0)
-    with open(blob_path, "wb") as f:
-        while True:
-            chunk = data_stream.read(CHUNK_SIZE)
-            if not chunk:
-                break
-            f.write(chunk)
-            
-    return final_hash
-
-def get_blob(blob_hash: str) -> Generator[bytes, None, None]:
-    """Returns an iterator streaming chunks of the stored file payload securely."""
-    blob_path = os.path.join(BLOB_DIR, blob_hash)
-    
-    if not os.path.exists(blob_path):
-        raise ValueError(f"Blob with hash {blob_hash} does not exist.")
-        
-    # Open file and yield chunks as a generator
-    with open(blob_path, "rb") as f:
-        while True:
-            chunk = f.read(CHUNK_SIZE)
-            if not chunk:
-                break
-            yield chunk
