@@ -1,11 +1,15 @@
 import click
+import getpass
 import os
 import json
+from datetime import datetime, timezone
 
+from core import chunker
+from core.objects import format_time
 from cli.utils.file_scanner import scan_files
-from cli.utils.hash import get_file_hash
-from cli.utils.api import check_hash, upload_file, create_commit, get_log, query_metadata
-from cli.utils.tree import get_tree_hash, get_commit_hash
+from cli.utils.api import existing_files, missing_chunks, upload_chunk, register_files, create_commit, get_log, query_metadata
+
+HEAD_PATH = os.path.join(".datahub", "HEAD")
 
 
 @click.group()
@@ -30,60 +34,70 @@ def init():
 
 
 @cli.command()
-@click.argument("remote_url", required=False)
+@click.argument("remote_url")
 @click.option("-m", "--message", default="Auto-commit", help="Commit message")
-def push(remote_url=None, message="Auto-commit"):
-    """Pushes local commits to the server over HTTP."""
+@click.option("--author", default=getpass.getuser, show_default="your login name", help="Commit author")
+def push(remote_url, message, author):
+    """Uploads only the chunks the server lacks, then commits on top of this copy's HEAD."""
+    if not os.path.isdir(".datahub"):
+        raise click.ClickException("Not a DataHub repository; run 'init' first.")
+    remote_url = remote_url.rstrip("/")
 
-    # REQUIRED FOR TEST CASE
-    click.echo("Pushing data...")
+    click.echo("Scanning and chunking files...")
+    paths = scan_files()
+    # Read sizes from the module (not defaults) so client and server always agree
+    chunked = {p: chunker.chunk_file(p, chunker.MIN_SIZE, chunker.AVG_SIZE, chunker.MAX_SIZE) for p in paths}
 
-    # If test is running → stop here
-    if remote_url is None:
-        return
+    # Whole-file check first: unchanged files need no chunk work at all
+    known = existing_files(remote_url, sorted({fh for fh, _, _ in chunked.values()}))
+    new_files = {}  # file_hash -> (path, size, chunks); identical files are sent once
+    for path, (file_hash, size, chunks) in chunked.items():
+        if file_hash not in known:
+            new_files.setdefault(file_hash, (path, size, chunks))
 
-    click.echo("Scanning files...")
+    # Where to read each chunk from (first occurrence wins; same hash => same bytes)
+    sources = {}
+    for path, _, chunks in new_files.values():
+        for h, offset, length in chunks:
+            sources.setdefault(h, (path, offset, length))
 
-    files = scan_files()
-    file_map = []
+    to_upload = missing_chunks(remote_url, list(sources))
+    uploaded_bytes = 0
+    for h in to_upload:
+        path, offset, length = sources[h]
+        with open(path, "rb") as f:
+            f.seek(offset)
+            upload_chunk(remote_url, h, f.read(length))
+        uploaded_bytes += length
 
-    for file in files:
-        try:
-            file_hash = get_file_hash(file)
+    if new_files:
+        register_files(remote_url, [
+            {"file_hash": fh, "size": size, "chunker": chunker.CHUNKER,
+             "chunks": [{"hash": h, "length": n} for h, _, n in chunks]}
+            for fh, (_, size, chunks) in new_files.items()
+        ])
 
-            exists_response = check_hash(remote_url, file_hash)
+    parent = None
+    if os.path.exists(HEAD_PATH):
+        with open(HEAD_PATH) as f:
+            parent = f.read().strip() or None
 
-            if not exists_response.get("exists", False):
-                click.echo(f"Uploading {file}")
-                upload_file(remote_url, file_hash, file)
-            else:
-                click.echo(f"Skipping {file} (already exists)")
-
-            file_map.append({
-                "name": file,
-                "object_hash": file_hash,
-                "object_type": "blob"
-            })
-
-        except Exception as e:
-            click.echo(f"Error processing {file}: {str(e)}")
-
-    click.echo("Creating commit...")
-
-    # ✅ FIXED BLOCK (proper indentation)
-    tree_hash = get_tree_hash(file_map)
-    commit_hash = get_commit_hash(tree_hash)
-
-    commit_payload = {
-        "commit_hash": commit_hash,
-        "tree_hash": tree_hash,
+    result = create_commit(remote_url, {
+        "parent_hash": parent,
+        "files": {p: fh for p, (fh, _, _) in chunked.items()},
+        "author": author,
         "message": message,
-        "entries": file_map
-    }
+        "time": format_time(datetime.now(timezone.utc)),
+    })
+    with open(HEAD_PATH, "w") as f:
+        f.write(result["commit_hash"])
 
-    response = create_commit(remote_url, commit_payload)
-
-    click.echo(f"Push complete: {response}")
+    total_chunks = sum(len(c) for _, _, c in chunked.values())
+    total_bytes = sum(size for _, size, _ in chunked.values())
+    click.echo(f"Files:  {len(new_files)} new / {len(paths)} total")
+    click.echo(f"Chunks: {len(to_upload)} uploaded / {total_chunks} total")
+    click.echo(f"Bytes:  {uploaded_bytes} uploaded / {total_bytes} total")
+    click.echo(f"Commit: {result['commit_hash']}")
 
 @cli.command()
 @click.argument("remote_url")
