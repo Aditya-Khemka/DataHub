@@ -4,7 +4,7 @@ This walks you through using DataHub from scratch: start the server, version a d
 
 Commands are for **Windows PowerShell**, run from the **repository root** unless a step says otherwise. Everything runs inside Docker, so you don't need Python installed.
 
-> New to the ideas (Merkle trees, chunks, commits)? Read [README.md §1](README.md#1-the-design-step-by-step) first; it builds them up step by step.
+> New to the ideas (Merkle trees, chunks, commits)? Read [How it works](README.md#1-how-it-works-step-by-step) first; it builds them up step by step.
 
 ## Contents
 1. [Start the server](#1-start-the-server)
@@ -151,7 +151,7 @@ Chunks: 1 uploaded / 7 total
 Bytes:  12953026 uploaded / 54888998 total
 ```
 
-Only the chunk containing the new row was uploaded (13 MB of 55 MB); every later chunk kept its hash because content-defined boundaries move with the content ([README step 8](README.md#step-8-beyond-the-slides-why-content-defined-chunking)). With fixed-size chunks every chunk after the insert would have changed. The exact bytes depend on where the boundaries fall: one chunk is 4–64 MiB.
+Only the chunk containing the new row was uploaded (13 MB of 55 MB); every later chunk kept its hash because content-defined boundaries move with the content ([why content-defined chunking](README.md#step-8-why-content-defined-chunking)). With fixed-size chunks every chunk after the insert would have changed. The exact bytes depend on where the boundaries fall: one chunk is 4–64 MiB.
 
 ## 5. Look at the history
 

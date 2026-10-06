@@ -28,7 +28,7 @@ The script regenerates `mock_workspace/train_data.csv`, `model_rf.py` and `metri
 | 7 | `query "row_count > 1000"`: stats were extracted by the CLI during push | `train_data.csv \| {'row_count': 15000, ...}` |
 | 8 | `log`: the commit chain, newest first | two commits, the second pointing at the first |
 
-## Sample output (2026-10-06)
+## Sample output
 
 ```text
 [Step 4] Pushing Initial Baseline Models & Heavy Datasets...

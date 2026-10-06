@@ -81,21 +81,21 @@ def test_something(db_session, chunk_store):
 API tests use the `client` fixture in `api/tests/test_server.py` (a `TestClient` wired to `db_engine`); CLI tests reuse it and swap the CLI's HTTP session for it.
 
 ### What the suite covers
-- `core/tests/test_core.py`: chunking round trip, **pinned chunk boundaries**, dedup after an insert, Merkle tree behaviour (slide 3), Unicode names, commit hashing.
+- `core/tests/test_core.py`: chunking round trip, **pinned chunk boundaries**, dedup after an insert, Merkle tree behaviour (a change only re-hashes its path to the root), Unicode names, commit hashing.
 - `core/tests/test_repo.py`: storing / verifying files, every rejected forged claim, commit chains, conflicts, retries, stats.
 - `core/tests/test_concurrency.py` (Postgres only): simultaneous pushes and uploads (exactly one winner, no half-saved data).
 - `infrastructure/`, `storage/`, `api/`, `cli/`, `metadata/`, `query/`: each module's contract, plus full push/pull flows through the real API.
 
 ## 4. Conventions
 
-- **Ponytail style:** the simplest thing that works, standard library first, no speculative abstractions. A deliberate shortcut with a known limit gets a comment saying so and naming the upgrade path, e.g. `# ponytail: one query per folder; switch to a recursive CTE if deep trees get slow`.
-- **Chunk settings are permanent.** `MIN_SIZE`, `AVG_SIZE`, `MAX_SIZE` in `core/chunker.py` and the `fastcdc` version must not change: new chunks would stop deduplicating against stored data. `test_boundaries_are_pinned` fails if anything moves a boundary. See [README step 9](README.md#step-9-beyond-the-slides-choosing-the-sizes-4--16--64-mib).
+- **Keep it simple:** the simplest thing that works, standard library first, no speculative abstractions. A deliberate shortcut with a known limit gets a comment saying so and naming the upgrade path, e.g. `# one query per folder; switch to a recursive CTE if deep trees get slow`.
+- **Chunk settings are permanent.** `MIN_SIZE`, `AVG_SIZE`, `MAX_SIZE` in `core/chunker.py` and the `fastcdc` version must not change: new chunks would stop deduplicating against stored data. `test_boundaries_are_pinned` fails if anything moves a boundary. See [choosing the sizes](README.md#step-9-choosing-the-sizes-4--16--64-mib).
 - **Hash formats are versioned** (`datahub-tree-v1`, `datahub-commit-v1`). Changing one means a new version string and a migration story, not an edit in place.
 - Errors: raise `ValueError` for bad input (becomes HTTP 400) and `repo.Conflict` for "someone pushed first" (HTTP 409).
 
 ## 5. Changing the database schema
 
-There are no migrations (decided: no Alembic). After changing a model in `infrastructure/db.py`:
+There are no schema migrations. After changing a model in `infrastructure/db.py`:
 
 1. Recreate the database, which **deletes all data**:
    ```powershell

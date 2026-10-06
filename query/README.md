@@ -14,7 +14,7 @@ execute_query(session, ast, files) -> [(path, file_hash, stats), ...]
 - Operators: `>`, `<`, `>=`, `<=`, `==`. Anything else is a `ValueError` (HTTP 400).
 - The metric is read from the JSON `stats` column with SQLAlchemy expressions (`Metadata.stats[metric].as_float()`). **No SQL is built from strings**, so input like `accuracy > 0.9; DROP TABLE commit` is just an invalid query.
 - Results are listed by **path**, sorted; a file stored under two paths appears under both.
-- The filter runs in SQL; narrowing to the commit's files happens in Python, which avoids SQLite's limit on bound parameters for big commits (marked `ponytail:`).
+- The filter runs in SQL; narrowing to the commit's files happens in Python, which avoids SQLite's limit on bound parameters for big commits.
 
 Used by `POST /query/` and `datahub query`.
 

@@ -19,7 +19,7 @@ extract_metrics(file_path: str, mime_type: str) -> dict
 Rules:
 - **Never crash the caller:** every failure is caught and returned as `status: failed`.
 - **Read-only:** files are only opened for reading.
-- Known approximation: CSV quoted fields containing newlines over-count rows (marked `ponytail:` in the code).
+- Known approximation: CSV quoted fields containing newlines over-count rows (noted in the code).
 
 ## Tests
 ```powershell

@@ -1,7 +1,7 @@
 # Core: chunking, hashing and repository logic
 **Owner:** shared
 
-Everything that must behave identically on the client and the server lives here, so the CLI and the API can never disagree about a hash. See [README §1](../README.md#1-the-design-step-by-step) for the ideas behind it.
+Everything that must behave identically on the client and the server lives here, so the CLI and the API can never disagree about a hash. See [How it works](../README.md#1-how-it-works-step-by-step) for the ideas behind it.
 
 ## `core/chunker.py`: content-defined chunking
 
@@ -14,7 +14,7 @@ chunk_file(path) -> (file_hash, size, [(chunk_hash, offset, length), ...])
 - Splits a file with FastCDC and hashes **every chunk and the whole file** (SHA-256) in a single read pass.
 - Empty files return `(sha256(b""), 0, [])` (fastcdc cannot memory-map an empty file).
 - Refuses to run if the compiled fastcdc extension isn't loaded (Python 3.8–3.12 only).
-- The settings are **permanent**: see [README step 9](../README.md#step-9-beyond-the-slides-choosing-the-sizes-4--16--64-mib). Tests patch them to tiny values through the `chunk_store` fixture.
+- The settings are **permanent**: see [choosing the sizes](../README.md#step-9-choosing-the-sizes-4--16--64-mib). Tests patch them to tiny values through the `chunk_store` fixture.
 
 ## `core/objects.py`: hash formats (the Merkle tree)
 
