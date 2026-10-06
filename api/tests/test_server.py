@@ -3,29 +3,19 @@ import random
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-import storage.engine as storage
 from api.server import app, get_db_session
 from core import chunker
 from core.objects import build_trees, commit_hash
-from infrastructure.db import Base
 
 T = "2026-01-01T00:00:00Z"
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
-    """Fresh DB and chunk folder per test; tiny chunk sizes so tests stay fast."""
-    monkeypatch.setattr(storage, "BLOB_DIR", str(tmp_path / "blobs"))
-    monkeypatch.setattr(chunker, "MIN_SIZE", 64)
-    monkeypatch.setattr(chunker, "AVG_SIZE", 256)
-    monkeypatch.setattr(chunker, "MAX_SIZE", 1024)
-    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine)
+def client(db_engine, chunk_store):
+    """Fresh DB and chunk folder per test, tiny chunk sizes (see conftest.py)."""
+    Session = sessionmaker(bind=db_engine)
 
     def session_override():
         with Session() as s:

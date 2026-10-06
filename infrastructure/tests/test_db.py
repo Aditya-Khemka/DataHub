@@ -1,19 +1,11 @@
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import IntegrityError
 from infrastructure.db import Base, Commit, Tree, TreeEntry, ObjectType, Branch, Chunk, File, FileChunk, Metadata, get_commit_history, get_tree_closure, advance_branch, insert_ignore
 
 @pytest.fixture
-def session():
-    """Setup an isolated, in-memory SQLite database enabling standalone CTE Testing."""
-    engine = create_engine("sqlite:///:memory:", echo=False)
-    Base.metadata.create_all(bind=engine)
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    yield session
-    session.rollback() # Rollback standardizes
-    session.close()
+def session(db_session):
+    """Fresh database per test (SQLite, or Postgres via TEST_DATABASE_URL; see conftest.py)."""
+    return db_session
 
 def test_commit_history_recursive_cte(session):
     """Verifies chronological backwards traversal of parent Commits returning absolute length and correct depth fields."""

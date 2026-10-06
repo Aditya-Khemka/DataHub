@@ -1,5 +1,5 @@
 from query.parser import build_filter, execute_query
-from infrastructure.db import Base, engine, SessionLocal, Metadata
+from infrastructure.db import Metadata
 
 def setup_metadata(session):
     # Clear table
@@ -15,9 +15,8 @@ def setup_metadata(session):
     session.commit()
 
 
-def test_execute_query_accuracy():
-    Base.metadata.create_all(bind=engine)
-    session = SessionLocal()
+def test_execute_query_accuracy(db_session):
+    session = db_session  # fresh DB per test (conftest.py), never the app database
     setup_metadata(session)
 
     ast = build_filter("accuracy > 0.9")
@@ -29,9 +28,8 @@ def test_execute_query_accuracy():
     session.close()
 
 
-def test_execute_query_loss():
-    Base.metadata.create_all(bind=engine)
-    session = SessionLocal()
+def test_execute_query_loss(db_session):
+    session = db_session  # fresh DB per test (conftest.py), never the app database
     setup_metadata(session)
 
     ast = build_filter("loss < 0.2")
@@ -43,9 +41,8 @@ def test_execute_query_loss():
     session.close()
 
 
-def test_execute_query_no_result():
-    Base.metadata.create_all(bind=engine)
-    session = SessionLocal()
+def test_execute_query_no_result(db_session):
+    session = db_session  # fresh DB per test (conftest.py), never the app database
     setup_metadata(session)
 
     ast = build_filter("accuracy > 0.99")

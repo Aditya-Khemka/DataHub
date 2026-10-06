@@ -1,0 +1,10 @@
+# Local-only state; compose mounts the repo at /app anyway, these just keep the image small and Linux-clean
+venv/
+.venv/
+blobs/
+**/__pycache__/
+.pytest_cache/
+.datahub/
+.git/
+.env
+credentials.json

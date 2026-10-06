@@ -3,25 +3,14 @@ import io
 import random
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-
-import storage.engine as storage
 from core import chunker, repo
-from infrastructure.db import Base, Branch, Chunk, get_branch_history
+from infrastructure.db import Branch, Chunk, get_branch_history
 
 
 @pytest.fixture
-def session(tmp_path, monkeypatch):
-    """Fresh DB + chunk folder per test; tiny chunk sizes (fastcdc minimums) so tests stay fast."""
-    monkeypatch.setattr(storage, "BLOB_DIR", str(tmp_path / "blobs"))
-    monkeypatch.setattr(chunker, "MIN_SIZE", 64)
-    monkeypatch.setattr(chunker, "AVG_SIZE", 256)
-    monkeypatch.setattr(chunker, "MAX_SIZE", 1024)
-    engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine)
-    with Session(engine) as s:
-        yield s
+def session(db_session, chunk_store):
+    """Fresh DB + chunk folder per test with tiny chunk sizes (see conftest.py)."""
+    return db_session
 
 
 def write(tmp_path, name, data):
