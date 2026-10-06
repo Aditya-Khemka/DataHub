@@ -167,3 +167,28 @@ def test_pull_from_empty_remote(client, monkeypatch, tmp_path):
     _copy(tmp_path, monkeypatch, "a")
     code, out = run("pull", REMOTE)
     assert code == 1 and "no commits" in out
+
+
+def test_pull_keeps_local_edits_to_files_the_remote_did_not_change(client, monkeypatch, tmp_path):
+    """Only paths changed on BOTH sides conflict; local edits/deletions elsewhere survive and push cleanly."""
+    monkeypatch.setattr(api, "http", client)
+    a = _copy(tmp_path, monkeypatch, "a", {"x.txt": "x1", "y.txt": "y1", "z.txt": "z1"})
+    run("push", REMOTE)
+    b = _copy(tmp_path, monkeypatch, "b")
+    run("pull", REMOTE)
+    (b / "y.txt").write_text("y2 from b")
+    run("push", REMOTE)
+
+    monkeypatch.chdir(a)
+    (a / "x.txt").write_text("x2 local, unpushed")
+    os.remove(a / "z.txt")
+    code, out = run("pull", REMOTE)
+    assert code == 0, out
+    assert (a / "y.txt").read_text() == "y2 from b"           # remote change arrives
+    assert (a / "x.txt").read_text() == "x2 local, unpushed"  # local edit kept
+    assert not (a / "z.txt").exists()                          # local deletion kept
+
+    assert run("push", REMOTE)[0] == 0                         # A's work now goes on top of B's
+    monkeypatch.chdir(b)
+    run("pull", REMOTE)
+    assert (b / "x.txt").read_text() == "x2 local, unpushed" and not (b / "z.txt").exists()

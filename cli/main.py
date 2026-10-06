@@ -124,8 +124,10 @@ def pull(remote_url, force):
         full = os.path.realpath(path)
         if os.path.commonpath([root, full]) != root or full == root:
             raise click.ClickException(f"Refusing unsafe path from server: {path!r}")
-        current = _hash_file(full) if os.path.isfile(full) else None
         want = target.get(path)
+        if want == base.get(path):
+            continue  # remote didn't touch this path; keep the local version (edited, deleted or unchanged)
+        current = _hash_file(full) if os.path.isfile(full) else None
         if current == want:
             continue
         if current is not None and current != base.get(path):
