@@ -208,7 +208,7 @@ flowchart LR
     API --> REPO
     REPO --> ST
     REPO --> DB
-    CLI -. "same hashing code" .- CORE
+    CLI -.-|same hashing code| CORE
     REPO -.- CORE
 ```
 
@@ -239,23 +239,6 @@ flowchart LR
 ## 4. Database structure
 
 ![DataHub ER diagram](DataHub_ER_Diagram.png)
-
-<details>
-<summary>Same diagram as Mermaid source (<a href="ER_Diagram.mmd">ER_Diagram.mmd</a>)</summary>
-
-```mermaid
-erDiagram
-    BRANCH }o--|| COMMIT : "head"
-    COMMIT |o--o{ COMMIT : "parent_of"
-    COMMIT }o--|| TREE : "root tree"
-    TREE ||--o{ TREE_ENTRY : "contains"
-    TREE_ENTRY }o--o| TREE : "sub-folder (type=tree)"
-    TREE_ENTRY }o--o| FILE : "file (type=file)"
-    FILE ||--o{ FILE_CHUNK : "ordered chunk list"
-    CHUNK ||--o{ FILE_CHUNK : "used by"
-    FILE ||--o| METADATA : "stats"
-```
-</details>
 
 | Table | Columns | Holds |
 |---|---|---|
