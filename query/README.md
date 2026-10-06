@@ -1,37 +1,24 @@
-# Module 6: Query Language 
+# Module 6: Query language
 **Owner:** Pashuvula Niranand Reddy
 
-## Core Responsibility
-To enable researchers to leverage Saurabh's Metadata (Module 5), you enforce custom domain-specific queries parsing string filters natively into Pythonic boundaries tracking the DAG natively.
-
-## Contracted Interface (`query/parser.py`)
-
-Your code sits atop the API responding to the `cli log --metric "row_count > 500"` commands. 
+A tiny filter language over file stats ([parser.py](parser.py)): `"<metric> <operator> <number>"`, e.g. `accuracy > 0.9`, `row_count >= 1000000`.
 
 ```python
-from sqlalchemy.orm import Session
-from sqlalchemy import select
-from infrastructure.db import Metadata # Connecting explicitly into Abinav's DB!
+build_filter("accuracy > 0.9") -> {"metric": "accuracy", "operator": ">", "value": 0.9}
+    # ValueError unless exactly three parts and a numeric value
 
-def build_filter(query_string: str) -> dict:
-    """
-    Translates 'accuracy > 0.9' securely into an Abstract Syntax Dictionary representing the condition precisely.
-    """
-    pass
-
-def execute_query(session: Session, ast: dict) -> list:
-    """
-    Takes an abstract AST and utilizes SQLAlchemy Core boundaries traversing Metadata tables
-    and joining mapped Blob targets fitting the mathematical limits.
-    """
-    pass
+execute_query(session, ast, files) -> [(path, file_hash, stats), ...]
+    # files: {path: file_hash}, normally the files of main's latest commit
 ```
 
-## Strict Constraints
-1. **No String Injecting:** Standard ML Engineers might pass nested malicious drop tables maliciously or accidentally mimicking strings: `accuracy > 0.9; DROP TABLE commit`. You must exclusively rely on SQLAlchemy core functions (`column("speed") > 0.9`) rejecting string interpolations strictly. 
+- Operators: `>`, `<`, `>=`, `<=`, `==`. Anything else is a `ValueError` (HTTP 400).
+- The metric is read from the JSON `stats` column with SQLAlchemy expressions (`Metadata.stats[metric].as_float()`). **No SQL is built from strings**, so input like `accuracy > 0.9; DROP TABLE commit` is just an invalid query.
+- Results are listed by **path**, sorted; a file stored under two paths appears under both.
+- The filter runs in SQL; narrowing to the commit's files happens in Python, which avoids SQLite's limit on bound parameters for big commits (marked `ponytail:`).
 
-## Execution
-Utilize edge-case strings testing SQL defense mechanisms purely through Docker natively:
-```bash
-docker-compose run --rm dev-env pytest query/tests/test_parser.py -v
+Used by `POST /query/` and `datahub query`.
+
+## Tests
+```powershell
+venv\Scripts\python -m pytest query/tests -v
 ```

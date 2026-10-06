@@ -4,7 +4,7 @@ param(
 )
 
 if ($Args.Count -eq 0) {
-    Write-Host "Usage: datahub <init|push|log|query> [args]"
+    Write-Host "Usage: datahub <init|push|pull|log|query> [args]"
     Write-Host 'Tip (cmd): use double quotes, e.g. datahub push -m "initial demo"'
     exit 1
 }
@@ -17,7 +17,8 @@ if ($Args.Count -gt 1) {
 
 $remoteUrl = if ($env:DATAHUB_REMOTE_URL) { $env:DATAHUB_REMOTE_URL } else { "http://localhost:8000" }
 
-if ($command -eq "push") {
+if ($command -eq "push" -or $command -eq "pull") {
+    # Inject the server URL unless one was given (flags like -m / --force may follow)
     if ($rest.Count -eq 0 -or $rest[0].StartsWith("-")) {
         $rest = @($remoteUrl) + $rest
     }

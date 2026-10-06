@@ -1,28 +1,36 @@
-# Module 2: Storage Engine & Deduplication
-**Contributer:** Aditya Khemka
+# Module 2: Storage engine & deduplication
+**Contributor:** Aditya Khemka
 
-## Overview
-This module manages the storage layer for Datahub. It implements a **Content-Addressable Storage (CAS)** system that natively calculates SHA-256 hashes to prevent redundant disk writes and eliminate memory bloat.
+The content-addressable chunk store on disk ([engine.py](engine.py)). Every chunk is stored once, under its own SHA-256, at:
 
-## exported Operations
+```text
+BLOB_DIR/<first 2 hex chars>/<sha256>        e.g. blobs/9f/9f86d081884c7d65...
+```
+The two-character folders keep any single directory from holding millions of files.
 
-The following functions are exposed via `storage/engine.py` to be used by the API Gateway:
+## Functions
+```python
+chunk_path(chunk_hash) -> str
+    # validates the hash (64 lowercase hex) before building a path: no "../" tricks
+put_chunk(expected_hash, stream) -> bool
+    # True = newly written, False = already stored
+get_chunk(chunk_hash) -> Iterator[bytes]
+    # streams a stored chunk back in 1 MiB pieces
+```
 
-### `put_blob(data_stream: BinaryIO) -> str`
-Writes an incoming data stream to disk while ensuring no data is ever duplicated.
-- **Two-Pass Optimization:** It first hashes the stream chunk-by-chunk (`8192` bytes) without loading the entire stream into RAM.
-- **Atomic Deduplication:** If the resulting SHA-256 hash already exists in the `BLOB_DIR`, it skips writing to the disk entirely, returning the hash instantly ($O(1)$).
-- **Storage:** If the hash is completely new, it writes the chunks physically to `BLOB_DIR/<hash>`.
-- **Returns:** The exact unique hex digest (e.g. `e3b0c44298fc1c...`) for the DAG pointer.
+How `put_chunk` stays safe:
+1. Already stored? Return `False` without writing (deduplication).
+2. Stream into a **temp file in the destination folder**, hashing as it goes; stop past 64 MiB (`MAX_SIZE` from `core/chunker.py`).
+3. Hash mismatch or any error: delete the temp file, raise `ValueError`.
+4. Otherwise **atomically rename** (`os.replace`) into place, so a crash never leaves a half-written chunk.
+5. Windows: if the rename is blocked because another request is reading the same chunk, it is already stored (same hash, same bytes), so return `False`.
 
-### `get_blob(blob_hash: str)`
-Retrieves a previously stored file back to the network layer incrementally.
-- Uses a Python `Generator` yielding safe `8192-byte` streaming chunks.
-- Ensures massive files can be pulled quickly without ram exhaustion.
-- Immediately raises a `ValueError` if an invalid pointer is requested.
+Storage never touches the database. Recording a chunk (`chunk` row) only *after* it is safely on disk is done by `core/repo.py: save_chunk`.
 
-## Testing Execution
-The storage engine limits side effects by containing everything into dockerized `pytest` generators.
-```bash
-docker-compose run --rm dev-env pytest storage/tests/test_engine.py -v
+## Configuration
+`BLOB_DIR` (default `blobs/`, relative to where the API runs).
+
+## Tests
+```powershell
+venv\Scripts\python -m pytest storage/tests -v
 ```

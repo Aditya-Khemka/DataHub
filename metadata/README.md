@@ -1,32 +1,27 @@
-# Module 5: Metadata Extraction
+# Module 5: Metadata extraction
 **Owner:** Saurabh Kumar
 
-## Core Responsibility
-To generate advanced lineage tracking across ML pipelines, we aggressively index statistical data (e.g., column distributions in a dataset blob). You write the raw analytical engine processing these unstructured static files into JSON data.
-
-## Contracted Interface (`metadata/extractor.py`)
-
-You are responsible for safely processing blobs immediately *after* they hit the server.
+Turns a data file into a small JSON dict of stats ([extractor.py](extractor.py)). It runs **in the CLI** during `push`, for new files only; the stats travel with `POST /files/` and are stored against the file's content hash.
 
 ```python
-def extract_metrics(file_path: str, mime_type: str) -> dict:
-    """
-    Accepts absolute storage paths for successfully committed Blobs.
-    Returns structurally valid JSON mapping schema characteristics.
-    """
-    if mime_type == "text/csv":
-        # Extract row count cleanly
-        return {"row_count": 1052, "schema": {"id": "int", "value": "float"}}
-        
-    return {"row_count": 0, "schema": {}}
+extract_metrics(file_path: str, mime_type: str) -> dict
 ```
 
-## Strict Constraints
-1. **Crash Isolation:** You are dealing natively with user uploads. Datasets may be incredibly corrupted, maliciously engineered zip bombs, or violently misformatted. You must defensively `try...except` absolutely everything. If pandas raises a `ParserError`, you catch it internally, log a warning, and uniformly return `{}`. Your parser crashing cannot crash the overarching `POST /commit` API transaction!
-2. **Read-Only Bound:** Do not open files utilizing "w" flags. You are accessing mathematically locked Blob shards.
+| Format | Returned | How (memory stays small) |
+|---|---|---|
+| CSV | `row_count`, `schema`, `columns`, `format` | Column types from a 100-row sample; rows by counting newlines in 1 MiB blocks |
+| JSON, flat object (`metrics.json`) | `{"format": "json", ...the file's own keys...}` | Loaded as-is, so `accuracy`, `loss`, ... become queryable |
+| JSON, table-like (list of records, dict of lists) | `row_count`, `schema`, `columns`, `format` | Loaded into a DataFrame |
+| Parquet | `row_count`, `schema`, `columns`, `format` | **Footer only** (`pq.read_metadata`); the data is never loaded |
+| Anything else | `{"status": "unknown_format", ...}` | Not sent to the server |
+| Unreadable file | `{"status": "failed", "error": ...}` | Not sent to the server |
 
-## Execution
-Execute mocked parsing checks locally simulating damaged CSV/Parquet files:
-```bash
-docker-compose run --rm dev-env pytest metadata/tests/test_extractor.py -v
+Rules:
+- **Never crash the caller:** every failure is caught and returned as `status: failed`.
+- **Read-only:** files are only opened for reading.
+- Known approximation: CSV quoted fields containing newlines over-count rows (marked `ponytail:` in the code).
+
+## Tests
+```powershell
+venv\Scripts\python -m pytest metadata/tests -v
 ```

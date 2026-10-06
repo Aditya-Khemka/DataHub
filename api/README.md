@@ -1,43 +1,35 @@
-# Module 4: High-Performance API Gateway
+# Module 4: API gateway
 **Owner:** Romir Shetty
 
-## Core Responsibility
-Your logic governs the gateway mapping external HTTP payloads natively into DataHub's rigid database components. You act as the absolute integration boundary protecting Abinav's Database (Module 1) and Aditya's Storage bounds (Module 2).
+The FastAPI server ([server.py](server.py)): a thin HTTP layer over [core/repo.py](../core/repo.py). It is the trust boundary: everything a client sends is validated and verified before it is stored. The full endpoint table is in [README §5](../README.md#5-api-reference).
 
-## Contracted Interface (`api/server.py`)
+## Endpoints
+| Endpoint | Calls |
+|---|---|
+| `POST /files/exists`, `POST /chunks/missing` | `repo.has_files`, `repo.missing_chunks` (≤ 10,000 hashes per call) |
+| `PUT /chunks/{hash}` | Streams the body into a temp buffer (spills to disk past 8 MiB; **413** past 64 MiB), then `repo.save_chunk` |
+| `POST /files/` | `repo.register_file` for each file (with optional `stats`) |
+| `POST /commit/` | `repo.create_commit`: the server builds the trees itself from `{path: file_hash}` |
+| `GET /branches/{name}`, `GET /commits/{hash}`, `GET /files/{hash}`, `GET /chunks/{hash}` | Read side, used by `pull` (chunks are streamed) |
+| `GET /log` | `get_branch_history(main)` |
+| `POST /query/` | Parses the query and filters `main`'s latest commit |
 
-You will construct async routes binding the physical payloads. Note how your implementation bridges directly outward:
+## Error mapping
+| Raised | HTTP |
+|---|---|
+| `ValueError` (bad hash, failed verification, bad stats, ...) | 400 |
+| `repo.Conflict` (`main` moved since the client's parent) | 409 |
+| Pydantic validation (malformed body, too many hashes) | 422 |
+| Unknown commit / file / chunk / branch | 404 |
+| Chunk body over 64 MiB | 413 |
 
-```python
-from fastapi import FastAPI, UploadFile, File, Depends
-from infrastructure.db import get_db_session  # Abinav's DB session
-from storage.engine import put_blob           # Aditya's chunk mechanism
-
-app = FastAPI()
-
-@app.post("/blobs/")
-async def upload_blob(file: UploadFile = File(...)):
-    """
-    Routs Python's UploadFile StreamingBody straight into the put_blob logic
-    without stopping in RAM. Returns the inserted hash locally.
-    """
-    hash_str = put_blob(file.file) 
-    return {"blob_hash": hash_str}
-
-@app.post("/commit/")
-async def create_commit(payload: dict, session=Depends(get_db_session)):
-    """
-    Accepts rigid Tree Entry JSON payloads representing the newest snapshot.
-    Leverages Abinav's Schema directly injecting Commits logically.
-    """
-    pass
+## Run
+```powershell
+docker compose exec dev-env uvicorn api.server:app --host 0.0.0.0 --port 8000
 ```
 
-## Strict Constraints
-1. **Streaming Proxies:** Fast API's `UploadFile.file` exposes a generator byte-stream natively mirroring standard python FileIO. You must stream this seamlessly into `put_blob` without ever running `file.read()` which crashes containers encountering 50GB CSVs.
-
-## Execution
-Run Endpoint API checks spoofing concurrent connections cleanly:
-```bash
-docker-compose run --rm dev-env pytest api/tests/test_server.py -v
+## Tests
+```powershell
+venv\Scripts\python -m pytest api/tests -v
 ```
+The `client` fixture wires a `TestClient` to a fresh database (`dependency_overrides`) and a private chunk folder.

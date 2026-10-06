@@ -1,47 +1,38 @@
-# Module 1: DAG Architecture & Schema Design
+# Module 1: Database schema & lineage
 **Owner:** Abinav Kiran
 
-## Responsibilities
-- Implementing SQLAlchemy models mapping identically to `Commit`, `Tree`, `TreeEntry`, `Blob`, `Branch`, and `Metadata` constraints.
-- Processing mathematically sound recursive lineage sequences (CTEs).
+SQLAlchemy models for the Merkle tree, file chunk lists and history, plus the queries that walk them ([db.py](db.py)). The full table reference and diagram are in [README §4](../README.md#4-database-structure).
 
-## Universal Execution Environment (Docker)
+## Models
+| Model | Table | Role |
+|---|---|---|
+| `Branch` | `branch` | Named pointer to the newest commit (`main`) |
+| `Commit` | `commit` | Snapshot: root tree + parent commit; `created_at` stored exactly as hashed |
+| `Tree`, `TreeEntry` | `tree`, `tree_entry` | Folders and their entries (`object_type` = `file` or `tree`); unique `(tree_hash, name)` |
+| `File` | `file` | One file version (SHA-256 of its content) + the chunker that produced it |
+| `FileChunk` | `file_chunk` | The file's ordered chunk list (`file_hash`, `seq`, `chunk_hash`) |
+| `Chunk` | `chunk` | One stored chunk (bytes on disk in `blobs/`) |
+| `Metadata` | `metadata` | Stats of a file version (`target_hash` = file hash) |
 
-To prevent localized errors (like missing Python binaries or OS-specific dependencies), **ALL developer execution must happen inside the synchronized Docker cluster automatically managing dependencies and PostgreSQL interactions.**
+All foreign keys are **deferred** (checked at commit), so related rows can be inserted in any order within a transaction. On SQLite, foreign keys are switched on for every connection.
 
-### 1. Build & Start the Environment
-From the root of the repository, execute the following to instantiate the shared database (`db`) alongside the synchronized execution environment map (`dev-env`). 
-
-First, create a root-level `credentials.json` file (local only) with this structure:
-```json
-{
-	"database": {
-		"user": "user",
-		"password": "password",
-		"name": "datahub",
-		"host": "db",
-		"port": 5432
-	}
-}
+## Functions
+```python
+get_commit_history(session, commit_hash)   # recursive CTE: commit -> root, newest first, with depth
+get_branch_history(session, name)          # history starting at a branch head; ValueError if no branch
+get_tree_closure(session, tree_hash)       # recursive CTE: every file hash under a tree
+advance_branch(session, name, expected, new) -> bool
+    # compare-and-swap: moves the branch only if it still points at `expected`
+    # (expected=None creates it); never commits; False means "someone pushed first"
+insert_ignore(session, Model, rows) -> int
+    # INSERT ... ON CONFLICT DO NOTHING (SQLite or Postgres); returns rows actually inserted
+init_db()                                  # create_all; schema changes = recreate the DB (no migrations)
 ```
 
-Then sync Docker environment values from the root `credentials.json` file:
-```bash
-./sync_credentials_env.ps1
-# or in cmd
-sync_credentials_env.cmd
-```
+## Configuration
+`DATABASE_URL` (default: in-memory SQLite). In Docker it points at the `db` container (`.env`, generated from `credentials.json`).
 
-Then start the environment:
-```bash
-docker-compose up -d --build
+## Tests
+```powershell
+venv\Scripts\python -m pytest infrastructure/tests -v
 ```
-*(You must have Docker Desktop actively running).*
-
-### 2. Perfectly Execute Module 1 Tests
-All dependencies (SQLAlchemy, pytest) are automatically baked into the `dev-env` container. You can execute the Module 1 tests universally from your terminal using:
-```bash
-docker-compose run --rm dev-env pytest infrastructure/tests/test_db.py -v
-```
-
-This guarantees identical database environments perfectly routing the CTE mathematical checks, ensuring anyone on the team can replicate the unrolling logic flawlessly.

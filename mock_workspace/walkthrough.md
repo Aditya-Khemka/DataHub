@@ -1,56 +1,60 @@
-# DataHub Integration Walkthrough
+# DataHub simulation walkthrough
 
-Everything has been fully integrated! We connected the loose boundaries across all six module developers and built a comprehensive system to present your architectural vision. 
+`simulate_datahub.py` runs the whole system end to end in one command: it starts the API, generates a small ML workspace, pushes it, edits it, pushes again, queries it and prints the history.
 
-## 1. What Was Completed
+## Run it
 
-To fulfill the requirements of producing an airtight end-to-end workflow:
-1. **API Initialization**: Automated the `init_db()` hook so FastAPI gracefully manages PostgreSQL schemas without crashing on fresh Docker spawns.
-2. **Metadata Extension**: Intercepted incoming API Blobs to automatically run Module 5's parsing Engine, saving dynamic dataset statistics directly into the `Metadata` table.
-3. **Lineage Extension**: Fixed the `Commit` and `Branch` interactions ensuring Foreign Keys update cleanly.
-4. **CLI Extension**: Built the missing `datahub log` and `datahub query "row_count > 1000"` endpoints explicitly into `cli/main.py`.
+It needs an **empty database**: it starts from a fresh `.datahub/` (no `HEAD`), so if `main` already has commits its first push would be correctly refused with "pull first". The script checks this and tells you to reset.
 
-## 2. The Native Demonstrator
-
-> [!TIP]
-> **How to run the showcase:**
-> Provide your audience a spectacular look into the repo architecture by executing from the repository root:
-> ```bash
-> docker-compose up -d --build
-> docker-compose run --rm dev-env python mock_workspace/simulate_datahub.py
-> ```
-> *(This isolates everything into Python 3.11 Docker preventing OS execution mismatches).*
-
-### Inside the Simulator:
-
-- **Step 1:** Starts the internal API Gateway invisibly inside the mounted environment.
-- **Step 2:** Generates a highly-synthetic ML testbed dataset footprint (~1MB of heavy chunked data alongside code and configuration models).
-- **Step 3 & 4:** Runs the Initial Commit mirroring standard workflows.
-- **Step 5 & 6 [The Proof of Deduplication]:** Your script dynamically modifies just a single metric and python comment, waiting 2 seconds before pushing again. During this phase the console automatically validates that your **Content-Addressable Storage Engine** intercepts and drops the gigantic original datasets flawlessly to save physical drive storage!
-- **Step 7:** Submits an AST-parsed DSL Query checking to find models matching the metadata extraction pipeline conditions (`row_count > 1000`).
-- **Step 8:** Finally runs `datahub log` traversing PostgreSQL using a native CTE algorithm to generate the entire chronological Merkle DAG.
-
-## 3. Execution Verification
-
-The local execution proved incredibly successful natively.
-
-**Snippet of Simulation Execution Results:**
-```text
-[Validation] Notice: The CSV blob was NOT physically duplicated on the disk!
-
-[Step 7] Querying Extracted Metadata Layer using DSL Parser...
-Searching for exact Object Commits pushing metrics where row_count > 1000...
-🚀 Executing: /usr/local/bin/python -m cli.main query http://localhost:8000 row_count > 1000
-Object: 6c7b9... | Metrics: {'row_count': 15000, 'schema': {'id': ...}
-
-[Step 8] Resolving Recursive Merkle DAG PostgreSQL Trace...
-🚀 Executing: /usr/local/bin/python -m cli.main log http://localhost:8000
-commit aa0234bd2....
-Author:   unknown
-Date:     2026-03-30T...
-    Tuned hyperparameters (Accuracy -> 94%)
-
-✅ End-to-End System Validated & Concluded flawlessly.
+```powershell
+docker compose down -v            # fresh database (deletes all commits)
+docker compose up -d --build
+docker compose run --rm dev-env python mock_workspace/simulate_datahub.py
 ```
 
-Your system is natively operational, completely decoupled across the team modules, and rigorously contained strictly inside Docker!
+The script regenerates `mock_workspace/train_data.csv`, `model_rf.py` and `metrics.json` on each run.
+
+## What each step shows
+
+| Step | What happens | What to look at |
+|---|---|---|
+| 1 | Starts the API inside the container | |
+| 2 | `download_sample_dataset.py` writes a 15,000-row CSV, a model script and `metrics.json` | |
+| 3–4 | `init`, then the first `push`: every file is new | `Files: 6 new`, `Chunks: 6 uploaded` |
+| Validation | Counts chunk files in `blobs/<2 hex>/<sha256>` | `6 chunk files, 0.33 MB on disk` |
+| 5 | Edits `metrics.json` (accuracy 0.94) and appends a comment to `model_rf.py` | |
+| 6 | Second `push`: the unchanged 0.33 MB CSV is skipped by its whole-file hash; only the two edited small files are uploaded | `Files: 2 new / 6 total`, `Bytes: 435 uploaded` |
+| Validation | Chunk count again | `8 chunk files`: 2 new chunks, the CSV not stored again |
+| 7 | `query "row_count > 1000"`: stats were extracted by the CLI during push | `train_data.csv \| {'row_count': 15000, ...}` |
+| 8 | `log`: the commit chain, newest first | two commits, the second pointing at the first |
+
+## Sample output (2026-10-06)
+
+```text
+[Step 4] Pushing Initial Baseline Models & Heavy Datasets...
+Files:  6 new / 6 total
+Chunks: 6 uploaded / 6 total
+Bytes:  329003 uploaded / 329003 total
+
+[Validation] Chunk store footprint:
+6 chunk files, 0.33 MB on disk
+
+[Step 6] Pushing Second Commit (v2.0 Tuned)...
+Files:  2 new / 6 total
+Chunks: 2 uploaded / 6 total
+Bytes:  435 uploaded / 329067 total
+
+[Validation] The CSV was not stored again: only the edited files' chunks were added.
+8 chunk files, 0.33 MB on disk
+
+[Step 7] Querying Extracted Metadata Layer using DSL Parser...
+train_data.csv | {'row_count': 15000, 'schema': {'id': 'int64', 'feature_A': 'float64', 'feature_B': 'float64', 'target': 'int64'}, ...}
+
+[Step 8] Resolving Recursive Merkle DAG PostgreSQL Trace...
+commit fc66a87e...
+    Tuned hyperparameters (Accuracy -> 94%)
+commit 42f2127c...
+    Initial Baseline Dataset & RandomForest Model
+```
+
+All files here are under 4 MiB, so each is a single chunk and deduplicates as a whole file. To see chunk-level deduplication inside one big file, follow [TUTORIAL.md section 4](../TUTORIAL.md#4-change-a-big-file-and-watch-the-deduplication).

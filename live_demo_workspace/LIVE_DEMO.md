@@ -73,8 +73,10 @@ cd live_demo_workspace
 cd live_demo_workspace
 ```
 
-In cmd, use `datahub` directly. This folder includes `datahub.cmd`.
-Use double quotes in cmd for values with spaces, for example: `datahub push -m "initial demo"`.
+In cmd, run the wrapper as `.\datahub` (this folder includes `datahub.cmd`; some Windows setups don't run commands from the current folder without the `.\`).
+Use double quotes in cmd for values with spaces, for example: `.\datahub push -m "initial demo"`.
+
+The wrappers fill in the server address (`http://localhost:8000`, or `DATAHUB_REMOTE_URL` if set) for `push`, `pull`, `log` and `query`.
 
 ## 3. Manual Demo Flow (Terminal B)
 
@@ -90,6 +92,13 @@ datahub init
 datahub push -m "Initial demo snapshot"
 ```
 
+Expected (all files are new):
+
+```text
+Files:  9 new / 9 total
+Chunks: 9 uploaded / 9 total
+```
+
 ### Step 3: Show commit history
 
 ```powershell
@@ -98,9 +107,13 @@ datahub log
 
 ### Step 4: Show metadata query result
 
+The CLI extracted stats (row count, column types) from each data file during the push:
+
 ```powershell
 datahub query "row_count == 8"
 ```
+
+Expected: `experiments.csv | {'row_count': 8, 'schema': {...}, ...}`
 
 ### Step 5: Make a visible change to the CSV
 
@@ -122,12 +135,29 @@ echo exp009,v2.1,CatBoost,0.92,0.08>>experiments.csv
 datahub push -m "Added exp009 after tuning"
 ```
 
+Expected: only the edited file is uploaded; the other 8 are recognised by their whole-file hash and skipped.
+
+```text
+Files:  1 new / 9 total
+Chunks: 1 uploaded / 9 total
+```
+
+(Files under 4 MiB are a single chunk, so the small CSV is re-uploaded whole. For a big file only the chunk around the edit is uploaded; see the tutorial's 55 MB example in `TUTORIAL.md` section 4.)
+
 ### Step 7: Show updated history and query again
 
 ```powershell
 datahub log
 datahub query "row_count == 9"
 ```
+
+### Step 8: Pull
+
+```powershell
+datahub pull
+```
+
+Expected: `Already up to date.` (this copy made the latest commit). To show a real pull, with a second copy, push conflicts and the "pull first" rule, follow `TUTORIAL.md` section 7.
 
 ## 4. Prove Data Is In PostgreSQL (Terminal C Optional)
 
@@ -137,16 +167,20 @@ PowerShell:
 
 ```powershell
 docker compose exec db psql -P pager=off -U user -d datahub -c 'SELECT commit_hash, author, message, created_at FROM commit ORDER BY created_at DESC LIMIT 10;'
-docker compose exec db psql -P pager=off -U user -d datahub -c 'SELECT id, target_hash, stats->>''row_count'' AS row_count, stats->>''format'' AS format FROM metadata ORDER BY id DESC LIMIT 10;'
+docker compose exec db psql -P pager=off -U user -d datahub -c 'SELECT target_hash, stats->>''row_count'' AS row_count, stats->>''format'' AS format FROM metadata;'
 docker compose exec db psql -P pager=off -U user -d datahub -c 'SELECT id, tree_hash, name, object_hash, object_type FROM tree_entry ORDER BY id DESC LIMIT 20;'
+docker compose exec db psql -P pager=off -U user -d datahub -c 'SELECT f.file_hash, f.size_bytes, count(*) AS chunks FROM file f JOIN file_chunk fc ON fc.file_hash = f.file_hash GROUP BY f.file_hash, f.size_bytes;'
+docker compose exec db psql -P pager=off -U user -d datahub -c 'SELECT (SELECT sum(size_bytes) FROM file) AS all_file_versions, (SELECT sum(size_bytes) FROM chunk) AS actually_stored;'
 ```
 
 cmd:
 
 ```bat
 docker compose exec db psql -P pager=off -U user -d datahub -c "SELECT commit_hash, author, message, created_at FROM commit ORDER BY created_at DESC LIMIT 10;"
-docker compose exec db psql -P pager=off -U user -d datahub -c "SELECT id, target_hash, stats->>'row_count' AS row_count, stats->>'format' AS format FROM metadata ORDER BY id DESC LIMIT 10;"
+docker compose exec db psql -P pager=off -U user -d datahub -c "SELECT target_hash, stats->>'row_count' AS row_count, stats->>'format' AS format FROM metadata;"
 docker compose exec db psql -P pager=off -U user -d datahub -c "SELECT id, tree_hash, name, object_hash, object_type FROM tree_entry ORDER BY id DESC LIMIT 20;"
+docker compose exec db psql -P pager=off -U user -d datahub -c "SELECT f.file_hash, f.size_bytes, count(*) AS chunks FROM file f JOIN file_chunk fc ON fc.file_hash = f.file_hash GROUP BY f.file_hash, f.size_bytes;"
+docker compose exec db psql -P pager=off -U user -d datahub -c "SELECT (SELECT sum(size_bytes) FROM file) AS all_file_versions, (SELECT sum(size_bytes) FROM chunk) AS actually_stored;"
 ```
 
 ## 5. Live Table Website (Terminal D Optional)

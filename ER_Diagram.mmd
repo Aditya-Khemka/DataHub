@@ -1,43 +1,60 @@
 erDiagram
-    COMMIT ||--o{ COMMIT : "parent_of"
-    COMMIT ||--|| TREE : "points_to_root"
-    COMMIT ||--o{ METADATA : "has_stats"
-    
-    TREE ||--o{ TREE_ENTRY : "contains"
-    TREE_ENTRY }|--|| BLOB : "references_data"
-    TREE_ENTRY }|--|| TREE : "references_sub-directory"
+    BRANCH }o--|| COMMIT : "head"
+    COMMIT |o--o{ COMMIT : "parent_of"
+    COMMIT }o--|| TREE : "root tree"
 
-    BLOB ||--o{ METADATA : "describes"
+    TREE ||--o{ TREE_ENTRY : "contains"
+    TREE_ENTRY }o--o| TREE : "sub-folder (type=tree)"
+    TREE_ENTRY }o--o| FILE : "file (type=file)"
+
+    FILE ||--o{ FILE_CHUNK : "ordered chunk list"
+    CHUNK ||--o{ FILE_CHUNK : "used by"
+    FILE ||--o| METADATA : "stats"
+
+    BRANCH {
+        string name PK "e.g. main"
+        string commit_hash FK "current head"
+    }
 
     COMMIT {
-        string commit_hash PK
-        string parent_hash FK
+        string commit_hash PK "sha256(tree, parent, author, time, message)"
+        string parent_hash FK "null for the first commit"
+        string tree_hash FK "root folder"
         string author
-        timestamp created_at
-        string message
+        text message
+        string created_at "UTC, exactly as hashed"
     }
 
     TREE {
-        string tree_hash PK
+        string tree_hash PK "sha256(sorted entries)"
     }
 
     TREE_ENTRY {
         int id PK
         string tree_hash FK
-        string name
-        string mode "file or dir"
-        string object_hash FK "points to Blob or Tree"
+        string name "unique within its tree"
+        string object_hash "file_hash or tree_hash"
+        enum object_type "file | tree"
     }
 
-    BLOB {
-        string blob_hash PK
+    FILE {
+        string file_hash PK "sha256(whole file)"
         bigint size_bytes
-        string storage_path "Physical location"
-        boolean is_compressed
+        string chunker "fastcdc-1.7.0/4M/16M/64M"
+    }
+
+    FILE_CHUNK {
+        string file_hash PK, FK
+        int seq PK "position in the file"
+        string chunk_hash FK
+    }
+
+    CHUNK {
+        string chunk_hash PK "sha256(chunk bytes); also its path in blobs/"
+        bigint size_bytes
     }
 
     METADATA {
-        int id PK
-        string target_hash FK "Commit or Blob hash"
-        jsonb stats "schema, row_count, metrics"
+        string target_hash PK, FK "file_hash"
+        json stats "row_count, schema, or metrics.json values"
     }
