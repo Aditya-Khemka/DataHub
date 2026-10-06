@@ -98,3 +98,21 @@ def test_chunk_upload_rejections(client):
 
     bad_record = {"file_hash": h, "size": 100, "chunker": chunker.CHUNKER, "chunks": [{"hash": h, "length": 100}]}
     assert client.post("/files/", json={"files": [bad_record]}).status_code == 400     # chunk never uploaded
+
+
+def test_read_endpoints_for_pull(client, tmp_path):
+    data = random.Random(4).randbytes(3_000)
+    file_hash, _ = push_file(client, tmp_path, data)
+    _, _, chunks = chunker.chunk_file(str(tmp_path / "upload"), 64, 256, 1024)
+    c = client.post("/commit/", json={"parent_hash": None, "files": {"d/f.bin": file_hash},
+                                      "author": "a", "message": "m", "time": T}).json()["commit_hash"]
+
+    assert client.get(f"/commits/{c}").json()["files"] == {"d/f.bin": file_hash}
+    listed = client.get(f"/files/{file_hash}").json()
+    assert listed["size"] == len(data) and [x["hash"] for x in listed["chunks"]] == [h for h, _, _ in chunks]
+    assert b"".join(client.get(f"/chunks/{x['hash']}").content for x in listed["chunks"]) == data
+
+    assert client.get(f"/commits/{'0' * 64}").status_code == 404
+    assert client.get(f"/files/{'0' * 64}").status_code == 404
+    assert client.get(f"/chunks/{'0' * 64}").status_code == 404
+    assert client.get("/chunks/not-a-hash").status_code == 400

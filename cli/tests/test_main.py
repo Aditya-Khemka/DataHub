@@ -80,3 +80,90 @@ def test_scanner_skips_tool_folders_and_uses_posix_paths(tmp_path):
         os.makedirs(tmp_path / os.path.dirname(p), exist_ok=True)
         (tmp_path / p).write_text("x")
     assert scan_files(str(tmp_path)) == ["a/b/c.csv", "top.txt"]
+
+
+# ---- pull ----
+
+import cli.main as main
+
+
+def _copy(tmp_path, monkeypatch, name, files=None):
+    """A fresh working copy (separate folder + .datahub) with optional files."""
+    d = tmp_path / name
+    d.mkdir()
+    for p, text in (files or {}).items():
+        (d / p).parent.mkdir(parents=True, exist_ok=True)
+        (d / p).write_text(text)
+    monkeypatch.chdir(d)
+    run("init")
+    return d
+
+
+def test_pull_roundtrip_two_copies(client, monkeypatch, tmp_path):
+    """A pushes; B pulls an identical copy, edits and pushes; A must pull before pushing again."""
+    monkeypatch.setattr(api, "http", client)
+    big = random.Random(2).randbytes(5_000).hex()
+    a = _copy(tmp_path, monkeypatch, "a", {"data/x.csv": big, "old.txt": "bye"})
+    assert run("push", REMOTE, "-m", "a1")[0] == 0
+
+    b = _copy(tmp_path, monkeypatch, "b")
+    code, out = run("pull", REMOTE)
+    assert code == 0, out
+    assert (b / "data/x.csv").read_text() == big and (b / "old.txt").read_text() == "bye"
+    assert (b / ".datahub/HEAD").read_text() == (a / ".datahub/HEAD").read_text()
+    assert run("pull", REMOTE)[1].strip() == "Already up to date."
+
+    (b / "data/x.csv").write_text(big + "\nnew row")
+    os.remove(b / "old.txt")
+    assert run("push", REMOTE, "-m", "b1")[0] == 0
+
+    monkeypatch.chdir(a)
+    code, out = run("pull", REMOTE)
+    assert code == 0, out
+    assert (a / "data/x.csv").read_text() == big + "\nnew row"
+    assert not (a / "old.txt").exists()                  # deletion propagated
+    assert not [p for p in os.listdir(a / "data") if p.endswith(".datahub-tmp")]
+
+
+def test_pull_protects_local_changes(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "http", client)
+    a = _copy(tmp_path, monkeypatch, "a", {"f.txt": "v1"})
+    run("push", REMOTE)
+    b = _copy(tmp_path, monkeypatch, "b")
+    run("pull", REMOTE)
+    (b / "f.txt").write_text("v2 from b")
+    run("push", REMOTE)
+
+    monkeypatch.chdir(a)
+    (a / "f.txt").write_text("unpushed work in a")
+    code, out = run("pull", REMOTE)
+    assert code == 1 and "f.txt" in out and "pull --force" in out
+    assert (a / "f.txt").read_text() == "unpushed work in a"   # nothing touched
+    assert run("pull", REMOTE, "--force")[0] == 0
+    assert (a / "f.txt").read_text() == "v2 from b"
+
+
+def test_pull_rejects_corrupt_chunks_and_unsafe_paths(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "http", client)
+    _copy(tmp_path, monkeypatch, "a", {"f.txt": "content"})
+    run("push", REMOTE)
+    b = _copy(tmp_path, monkeypatch, "b")
+
+    monkeypatch.setattr(main, "download_chunk", lambda *_: b"tampered")
+    code, out = run("pull", REMOTE)
+    assert code == 1 and "Corrupt chunk" in out
+    assert os.listdir(b) == [".datahub"]                # no file, no temp file
+    assert not (b / ".datahub/HEAD").exists()
+
+    real_get_commit = main.get_commit
+    monkeypatch.setattr(main, "get_commit", lambda *a: {**real_get_commit(*a), "files": {"../evil.txt": "0" * 64}})
+    code, out = run("pull", REMOTE)
+    assert code == 1 and "unsafe path" in out
+    assert not (tmp_path / "evil.txt").exists()
+
+
+def test_pull_from_empty_remote(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "http", client)
+    _copy(tmp_path, monkeypatch, "a")
+    code, out = run("pull", REMOTE)
+    assert code == 1 and "no commits" in out

@@ -1,12 +1,14 @@
+import os
 import tempfile
 from typing import Dict, List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+import storage.engine as storage
 from core import chunker, repo
 from infrastructure.db import SessionLocal, Branch, get_branch_history, init_db
 from query.parser import build_filter, execute_query
@@ -120,6 +122,35 @@ def get_branch(name: str, session: Session = Depends(get_db_session)):
     if branch is None:
         raise HTTPException(status_code=404, detail=f"Branch '{name}' does not exist")
     return {"name": branch.name, "commit_hash": branch.commit_hash}
+
+
+@app.get("/commits/{commit_hash}")
+def get_commit(commit_hash: str, session: Session = Depends(get_db_session)):
+    """A commit plus its flattened file list {path: file_hash}; what pull needs to rebuild a folder."""
+    found = repo.commit_files(session, commit_hash)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"Commit {commit_hash} does not exist")
+    commit, files = found
+    return {"commit_hash": commit.commit_hash, "parent_hash": commit.parent_hash, "author": commit.author,
+            "message": commit.message, "created_at": commit.created_at, "files": files}
+
+
+@app.get("/files/{file_hash}")
+def get_file(file_hash: str, session: Session = Depends(get_db_session)):
+    """A file's ordered chunk list."""
+    found = repo.file_chunks(session, file_hash)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"File {file_hash} does not exist")
+    size, chunks = found
+    return {"file_hash": file_hash, "size": size, "chunks": [{"hash": h, "length": n} for h, n in chunks]}
+
+
+@app.get("/chunks/{chunk_hash}")
+def download_chunk(chunk_hash: str):
+    """Raw chunk bytes, streamed. Clients verify the hash themselves."""
+    if not os.path.exists(storage.chunk_path(chunk_hash)):  # chunk_path rejects malformed hashes (400)
+        raise HTTPException(status_code=404, detail=f"Chunk {chunk_hash} does not exist")
+    return StreamingResponse(storage.get_chunk(chunk_hash), media_type="application/octet-stream")
 
 
 @app.get("/log")

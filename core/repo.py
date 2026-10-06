@@ -116,6 +116,40 @@ def read_file(session, file_hash):
         yield from get_chunk(h)
 
 
+def commit_files(session, commit_hash):
+    """Flattens a commit's Merkle tree into {path: file_hash}; None if the commit doesn't exist."""
+    _check_hashes([commit_hash])
+    commit = session.get(Commit, commit_hash)
+    if commit is None:
+        return None
+    files, stack = {}, [(commit.tree_hash, "")]
+    # ponytail: one query per folder; switch to a recursive CTE that builds paths if deep trees get slow
+    while stack:
+        tree, prefix = stack.pop()
+        for entry in session.scalars(select(TreeEntry).where(TreeEntry.tree_hash == tree)):
+            path = prefix + entry.name
+            if entry.object_type == ObjectType.tree:
+                stack.append((entry.object_hash, path + "/"))
+            else:
+                files[path] = entry.object_hash
+    return commit, files
+
+
+def file_chunks(session, file_hash):
+    """Returns (size, [(chunk_hash, length)] in file order), or None if the file isn't recorded."""
+    _check_hashes([file_hash])
+    record = session.get(File, file_hash)
+    if record is None:
+        return None
+    rows = session.execute(
+        select(FileChunk.chunk_hash, Chunk.size_bytes)
+        .join(Chunk, Chunk.chunk_hash == FileChunk.chunk_hash)
+        .where(FileChunk.file_hash == file_hash)
+        .order_by(FileChunk.seq)
+    ).all()
+    return record.size_bytes, [(h, n) for h, n in rows]
+
+
 def create_commit(session, parent, files, author, message, time=None, branch="main"):
     """
     Builds the Merkle trees for {path: file_hash}, records the commit and moves the branch, atomically.

@@ -1,13 +1,16 @@
 import click
 import getpass
+import hashlib
 import os
 import json
+import tempfile
 from datetime import datetime, timezone
 
 from core import chunker
 from core.objects import format_time
 from cli.utils.file_scanner import scan_files
-from cli.utils.api import existing_files, missing_chunks, upload_chunk, register_files, create_commit, get_log, query_metadata
+from cli.utils.api import (existing_files, missing_chunks, upload_chunk, register_files, create_commit, get_log,
+                           query_metadata, get_branch_head, get_commit, get_file, download_chunk)
 
 HEAD_PATH = os.path.join(".datahub", "HEAD")
 
@@ -77,13 +80,8 @@ def push(remote_url, message, author):
             for fh, (_, size, chunks) in new_files.items()
         ])
 
-    parent = None
-    if os.path.exists(HEAD_PATH):
-        with open(HEAD_PATH) as f:
-            parent = f.read().strip() or None
-
     result = create_commit(remote_url, {
-        "parent_hash": parent,
+        "parent_hash": _read_head(),
         "files": {p: fh for p, (fh, _, _) in chunked.items()},
         "author": author,
         "message": message,
@@ -98,6 +96,100 @@ def push(remote_url, message, author):
     click.echo(f"Chunks: {len(to_upload)} uploaded / {total_chunks} total")
     click.echo(f"Bytes:  {uploaded_bytes} uploaded / {total_bytes} total")
     click.echo(f"Commit: {result['commit_hash']}")
+
+
+@cli.command()
+@click.argument("remote_url")
+@click.option("--force", is_flag=True, help="Overwrite local changes that were never pushed")
+def pull(remote_url, force):
+    """Brings this folder to the remote's latest commit, downloading only files that differ."""
+    if not os.path.isdir(".datahub"):
+        raise click.ClickException("Not a DataHub repository; run 'init' first.")
+    remote_url = remote_url.rstrip("/")
+
+    head = get_branch_head(remote_url)
+    if head is None:
+        raise click.ClickException("Remote has no commits yet.")
+    local = _read_head()
+    if head == local:
+        click.echo("Already up to date.")
+        return
+
+    target = get_commit(remote_url, head)["files"]
+    base = get_commit(remote_url, local)["files"] if local else {}
+
+    root = os.path.realpath(".")
+    to_write, to_delete, conflicts = {}, [], []
+    for path in sorted(set(target) | set(base)):
+        full = os.path.realpath(path)
+        if os.path.commonpath([root, full]) != root or full == root:
+            raise click.ClickException(f"Refusing unsafe path from server: {path!r}")
+        current = _hash_file(full) if os.path.isfile(full) else None
+        want = target.get(path)
+        if current == want:
+            continue
+        if current is not None and current != base.get(path):
+            conflicts.append(path)  # edited locally, or an unpushed file in the way
+        if want is None:
+            to_delete.append(full)
+        else:
+            to_write[full] = want
+
+    if conflicts and not force:
+        raise click.ClickException(
+            "Local changes would be overwritten (push them, or pull --force):\n  " + "\n  ".join(conflicts))
+
+    # ponytail: downloads every changed file in full; reuse chunks from the old local copy if bandwidth matters
+    downloaded = 0
+    for full, file_hash in to_write.items():
+        downloaded += _download_file(remote_url, file_hash, full)
+    for full in to_delete:
+        if os.path.exists(full):
+            os.remove(full)
+
+    with open(HEAD_PATH, "w") as f:  # only after every file is in place
+        f.write(head)
+    click.echo(f"Files:  {len(to_write)} updated, {len(to_delete)} removed")
+    click.echo(f"Bytes:  {downloaded} downloaded")
+    click.echo(f"Commit: {head}")
+
+
+def _read_head():
+    """The last commit this copy pushed or pulled, or None for a fresh copy."""
+    if not os.path.exists(HEAD_PATH):
+        return None
+    with open(HEAD_PATH) as f:
+        return f.read().strip() or None
+
+
+def _hash_file(path):
+    with open(path, "rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def _download_file(remote_url, file_hash, dest):
+    """Fetches a file chunk by chunk into a temp file, verifying every chunk and the whole file, then swaps it in."""
+    folder = os.path.dirname(dest)
+    os.makedirs(folder, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=folder, suffix=".datahub-tmp")
+    try:
+        whole = hashlib.sha256()
+        with os.fdopen(fd, "wb") as out:
+            for chunk in get_file(remote_url, file_hash)["chunks"]:
+                data = download_chunk(remote_url, chunk["hash"])
+                if hashlib.sha256(data).hexdigest() != chunk["hash"]:
+                    raise click.ClickException(f"Corrupt chunk {chunk['hash']} from server")
+                whole.update(data)
+                out.write(data)
+        if whole.hexdigest() != file_hash:
+            raise click.ClickException(f"Downloaded file does not match {file_hash}")
+        os.replace(tmp, dest)
+        return os.path.getsize(dest)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
 
 @cli.command()
 @click.argument("remote_url")

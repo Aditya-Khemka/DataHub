@@ -7,9 +7,11 @@ http = requests.Session()
 BATCH = 10_000  # matches the server's MAX_BATCH
 
 
-def _call(method, url, **kwargs):
+def _call(method, url, allow_404=False, raw=False, **kwargs):
     """Sends the request; any 4xx/5xx becomes a CLI error carrying the server's own message."""
     response = getattr(http, method)(url, **kwargs)
+    if allow_404 and response.status_code == 404:
+        return None
     if response.status_code == 409:
         raise click.ClickException("Remote has newer commits than this copy; pull first.")
     if response.status_code >= 400:
@@ -18,7 +20,7 @@ def _call(method, url, **kwargs):
         except ValueError:
             detail = response.text
         raise click.ClickException(f"Server error {response.status_code}: {detail}")
-    return response.json()
+    return response.content if raw else response.json()
 
 
 def _batched(hashes):
@@ -54,3 +56,21 @@ def get_log(remote_url):
 
 def query_metadata(remote_url, query_str):
     return _call("post", f"{remote_url}/query/", json={"query": query_str})
+
+
+def get_branch_head(remote_url, name="main"):
+    """Current head commit hash, or None if the branch has no commits yet."""
+    found = _call("get", f"{remote_url}/branches/{name}", allow_404=True)
+    return found and found["commit_hash"]
+
+
+def get_commit(remote_url, commit_hash):
+    return _call("get", f"{remote_url}/commits/{commit_hash}")
+
+
+def get_file(remote_url, file_hash):
+    return _call("get", f"{remote_url}/files/{file_hash}")
+
+
+def download_chunk(remote_url, chunk_hash):
+    return _call("get", f"{remote_url}/chunks/{chunk_hash}", raw=True)
