@@ -106,3 +106,37 @@ def test_read_endpoints_for_pull(client, tmp_path):
     assert client.get(f"/files/{'0' * 64}").status_code == 404
     assert client.get(f"/chunks/{'0' * 64}").status_code == 404
     assert client.get("/chunks/not-a-hash").status_code == 400
+
+
+def test_query_returns_paths_from_latest_commit(client, tmp_path):
+    """Stats travel with /files/; /query/ answers over main's head only, by path."""
+    def register(data, stats):
+        path = tmp_path / "upload"
+        path.write_bytes(data)
+        fh, size, chunks = chunker.chunk_file(str(path), 64, 256, 1024)
+        for h, off, n in chunks:
+            client.put(f"/chunks/{h}", content=data[off:off + n])
+        record = {"file_hash": fh, "size": size, "chunker": chunker.CHUNKER,
+                  "chunks": [{"hash": h, "length": n} for h, _, n in chunks], "stats": stats}
+        return client.post("/files/", json={"files": [record]}), fh
+
+    assert client.post("/query/", json={"query": "accuracy > 0.9"}).json() == {"commit_hash": None, "results": []}
+
+    _, old = register(b"old model", {"accuracy": 0.95})
+    _, new = register(b"new model", {"accuracy": 0.97})
+    _, csv = register(b"a,b\n1,2\n", {"row_count": 1})
+    c1 = client.post("/commit/", json={"parent_hash": None, "files": {"m/metrics.json": old},
+                                       "author": "a", "message": "v1", "time": T}).json()["commit_hash"]
+    c2 = client.post("/commit/", json={"parent_hash": c1, "files": {"m/metrics.json": new, "d/t.csv": csv},
+                                       "author": "a", "message": "v2", "time": T}).json()["commit_hash"]
+
+    body = client.post("/query/", json={"query": "accuracy > 0.9"}).json()
+    assert body["commit_hash"] == c2
+    assert body["results"] == [{"path": "m/metrics.json", "file_hash": new, "stats": {"accuracy": 0.97}}]  # not v1's
+    assert client.post("/query/", json={"query": "accuracy > 0.99"}).json()["results"] == []
+
+    response, _ = register(b"bad stats", {"x": "y" * 70_000})
+    assert response.status_code == 400
+    response, _ = register(b"bad stats 2", ["not", "an", "object"])
+    assert response.status_code == 422                          # rejected by the request schema
+    assert client.post("/query/", json={"query": "accuracy 0.9"}).status_code == 400

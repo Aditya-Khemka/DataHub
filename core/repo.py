@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import os
 from datetime import datetime, timezone
 
@@ -7,7 +8,7 @@ from sqlalchemy import select
 
 from core import chunker
 from core.objects import build_trees, commit_hash, format_time, is_valid_hash
-from infrastructure.db import Branch, Chunk, Commit, File, FileChunk, ObjectType, Tree, TreeEntry, advance_branch, insert_ignore
+from infrastructure.db import Branch, Chunk, Commit, File, FileChunk, Metadata, ObjectType, Tree, TreeEntry, advance_branch, insert_ignore
 from storage.engine import chunk_path, get_chunk, put_chunk
 
 
@@ -40,20 +41,37 @@ def save_chunk(session, chunk_hash, data_stream):
     session.commit()
 
 
-def _record_file(session, file_hash, size, chunk_hashes):
+MAX_STATS_BYTES = 64 * 1024
+
+
+def _record_file(session, file_hash, size, chunk_hashes, stats=None):
     if insert_ignore(session, File, [{"file_hash": file_hash, "size_bytes": size, "chunker": chunker.CHUNKER}]):
         insert_ignore(session, FileChunk, [
             {"file_hash": file_hash, "seq": i, "chunk_hash": h} for i, h in enumerate(chunk_hashes)
         ])
+    if stats:
+        insert_ignore(session, Metadata, [{"target_hash": file_hash, "stats": stats}])  # same content => same stats
     session.commit()
 
 
-def register_file(session, file_hash, size, chunker_id, chunks):
+def _check_stats(stats):
+    """Stats come from the client: descriptive only, but bound their shape and size."""
+    if stats is None:
+        return
+    if not isinstance(stats, dict):
+        raise ValueError("Stats must be a JSON object")
+    if len(json.dumps(stats)) > MAX_STATS_BYTES:
+        raise ValueError(f"Stats exceed {MAX_STATS_BYTES} bytes")
+
+
+def register_file(session, file_hash, size, chunker_id, chunks, stats=None):
     """
     Records a file whose chunks a client already uploaded. chunks: [(chunk_hash, length)] in file order.
     Everything is verified first: a wrong record would hand corrupt data to everyone who dedupes against it.
+    stats: optional client-computed metadata (row count, schema, metrics) stored against the file hash.
     """
     _check_hashes([file_hash] + [h for h, _ in chunks])
+    _check_stats(stats)
     if chunker_id != chunker.CHUNKER:
         raise ValueError(f"Chunker mismatch: client {chunker_id!r}, server {chunker.CHUNKER!r}")
     if has_files(session, [file_hash]):
@@ -76,7 +94,7 @@ def register_file(session, file_hash, size, chunker_id, chunks):
         if stored[h] != n:
             raise ValueError(f"Chunk {h} is {stored[h]} bytes, declared {n}")
 
-    # ponytail: re-reads the whole file once per new file; fine at this scale, cache per-chunk trust if it becomes the bottleneck
+    # re-reads the whole file once per new file; fine at this scale, cache per-chunk trust if it becomes the bottleneck
     hasher = hashlib.sha256()
     for h, _ in chunks:
         for piece in get_chunk(h):
@@ -84,7 +102,7 @@ def register_file(session, file_hash, size, chunker_id, chunks):
     if hasher.hexdigest() != file_hash:
         raise ValueError("Chunks do not reassemble to the declared file hash")
 
-    _record_file(session, file_hash, size, [h for h, _ in chunks])
+    _record_file(session, file_hash, size, [h for h, _ in chunks], stats)
 
 
 def store_file(session, path):
@@ -123,7 +141,7 @@ def commit_files(session, commit_hash):
     if commit is None:
         return None
     files, stack = {}, [(commit.tree_hash, "")]
-    # ponytail: one query per folder; switch to a recursive CTE that builds paths if deep trees get slow
+    # one query per folder; switch to a recursive CTE that builds paths if deep trees get slow
     while stack:
         tree, prefix = stack.pop()
         for entry in session.scalars(select(TreeEntry).where(TreeEntry.tree_hash == tree)):

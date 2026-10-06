@@ -1,6 +1,6 @@
 import os
 import tempfile
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -55,6 +55,7 @@ class FileRecord(BaseModel):
     size: int
     chunker: str
     chunks: List[ChunkRef]
+    stats: Optional[Dict[str, Any]] = None  # client-computed metadata (row count, schema, metrics)
 
 
 class FilesPayload(BaseModel):
@@ -102,7 +103,7 @@ def files_exist(payload: HashList, session: Session = Depends(get_db_session)):
 def register_files(payload: FilesPayload, session: Session = Depends(get_db_session)):
     """Records files as ordered chunk lists; every claim is verified against the stored chunks."""
     for f in payload.files:
-        repo.register_file(session, f.file_hash, f.size, f.chunker, [(c.hash, c.length) for c in f.chunks])
+        repo.register_file(session, f.file_hash, f.size, f.chunker, [(c.hash, c.length) for c in f.chunks], f.stats)
     return {"registered": [f.file_hash for f in payload.files]}
 
 
@@ -162,13 +163,19 @@ async def get_log(session: Session = Depends(get_db_session)):
         return {"history": []}
 
 @app.post("/query/")
-async def query_metadata(payload: dict, session: Session = Depends(get_db_session)):
+def query_metadata(payload: dict, session: Session = Depends(get_db_session)):
+    """Filters the files of main's latest commit by a stat, e.g. 'accuracy > 0.9'."""
     query_string = payload.get("query")
     if not query_string:
          raise HTTPException(status_code=400, detail="Query string is required")
+    head = session.get(Branch, "main")
+    if head is None:
+        return {"commit_hash": None, "results": []}
+    _, files = repo.commit_files(session, head.commit_hash)
     try:
         ast = build_filter(query_string)
-        results = execute_query(session, ast)
-        return {"results": [{"target_hash": r[0].target_hash, "stats": r[0].stats} for r in results]}
+        results = execute_query(session, ast, files)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    return {"commit_hash": head.commit_hash,
+            "results": [{"path": path, "file_hash": h, "stats": stats} for path, h, stats in results]}

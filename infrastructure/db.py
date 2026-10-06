@@ -94,10 +94,10 @@ class Branch(Base):
     commit_hash = Column(String, ForeignKey("commit.commit_hash", deferrable=True, initially="DEFERRED"), nullable=False)
 
 class Metadata(Base):
-    """Dataset analytics stored persistently regarding a dataset blob or tree."""
+    """Stats of one file version (row count, schema, or a metrics.json's values), computed by the CLI.
+    Keyed by file hash: same content => same stats, so the first recorded set is kept."""
     __tablename__ = "metadata"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    target_hash = Column(String, nullable=False)
+    target_hash = Column(String, ForeignKey("file.file_hash", deferrable=True, initially="DEFERRED"), primary_key=True)
     stats = Column(JSON, nullable=False)
 
 def get_db_session():

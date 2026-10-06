@@ -96,3 +96,29 @@ def test_commit_chain_conflicts_and_retry(session, tmp_path):
 
     with pytest.raises(ValueError, match="Unknown files"):
         repo.create_commit(session, c2, {"x/data.csv": "f" * 64}, "me", "missing file", t)
+
+
+def test_register_file_stores_client_stats(session, tmp_path):
+    """Stats are kept per file hash (first set wins) and their shape/size is bounded."""
+    from infrastructure.db import Metadata
+
+    def upload(data):
+        file_hash, size, chunks = chunker.chunk_file(write(tmp_path, "s", data), 64, 256, 1024)
+        for h, offset, length in chunks:
+            repo.save_chunk(session, h, io.BytesIO(data[offset:offset + length]))
+        return file_hash, size, [(h, n) for h, _, n in chunks]
+
+    fh, size, declared = upload(b"metrics payload")
+    with pytest.raises(ValueError, match="JSON object"):
+        repo.register_file(session, fh, size, chunker.CHUNKER, declared, stats=["not", "an", "object"])
+    with pytest.raises(ValueError, match="exceed"):
+        repo.register_file(session, fh, size, chunker.CHUNKER, declared, stats={"blob": "x" * 70_000})
+    assert session.get(Metadata, fh) is None                     # rejected claims record nothing
+
+    repo.register_file(session, fh, size, chunker.CHUNKER, declared, stats={"accuracy": 0.9})
+    repo.register_file(session, fh, size, chunker.CHUNKER, declared, stats={"accuracy": 0.1})  # retry
+    assert session.get(Metadata, fh).stats == {"accuracy": 0.9}
+
+    fh2, size2, declared2 = upload(b"no stats here")
+    repo.register_file(session, fh2, size2, chunker.CHUNKER, declared2)
+    assert session.get(Metadata, fh2) is None

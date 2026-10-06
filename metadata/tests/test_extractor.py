@@ -62,3 +62,33 @@ def test_extract_metrics_schema_contract(tmp_path):
     assert result["schema"] == {"id": "int64", "value": "float64"}
     assert "columns" in result
     assert result["columns"][0]["name"] == "id"
+
+
+def test_flat_metrics_json_is_returned_as_queryable_values(tmp_path):
+    """metrics.json-style files used to fail ('If using all scalar values, you must pass an index')."""
+    f = tmp_path / "metrics.json"
+    f.write_text(json.dumps({"accuracy": 0.94, "loss": 0.05, "model_version": "v2.0-tuned"}))
+    assert extract_metrics(str(f), "application/json") == {
+        "format": "json", "accuracy": 0.94, "loss": 0.05, "model_version": "v2.0-tuned"}
+
+
+def test_json_list_of_records(tmp_path):
+    f = tmp_path / "rows.json"
+    f.write_text(json.dumps([{"a": 1, "b": "x"}, {"a": 2, "b": "y"}, {"a": 3, "b": "z"}]))
+    result = extract_metrics(str(f), "application/json")
+    assert result["row_count"] == 3 and [c["name"] for c in result["columns"]] == ["a", "b"]
+
+
+def test_parquet_reads_only_the_footer(tmp_path, monkeypatch):
+    """Row count and schema come from metadata; loading the table would blow up RAM on large files."""
+    f = tmp_path / "big.parquet"
+    pd.DataFrame({"x": range(1000), "y": ["v"] * 1000}).to_parquet(f)
+    monkeypatch.setattr(pq, "read_table", lambda *a, **k: pytest.fail("read_table must not be used"))
+    result = extract_metrics(str(f), "application/octet-stream")
+    assert result["row_count"] == 1000 and result["schema"] == {"x": "int64", "y": "string"}
+
+
+def test_csv_row_count_without_trailing_newline(tmp_path):
+    f = tmp_path / "t.csv"
+    f.write_bytes(b"a,b\n1,2\n3,4")  # last row has no newline
+    assert extract_metrics(str(f), "text/csv")["row_count"] == 2

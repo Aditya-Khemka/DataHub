@@ -25,7 +25,11 @@ from sqlalchemy import select
 from infrastructure.db import Metadata
 
 
-def execute_query(session: Session, ast: dict) -> list:
+def execute_query(session: Session, ast: dict, files: dict) -> list:
+    """
+    Runs the filter over the stats of the given files ({path: file_hash}, e.g. one commit's files).
+    Returns [(path, file_hash, stats)] sorted by path; a file stored under several paths is listed once per path.
+    """
     metric = ast["metric"]
     operator = ast["operator"]
     value = ast["value"]
@@ -48,5 +52,8 @@ def execute_query(session: Session, ast: dict) -> list:
     else:
         raise ValueError("Invalid operator")
 
-    result = session.execute(query)
-    return result.fetchall()
+    # filters by metric across all stored files, then keeps this commit's in Python
+    # (an IN list of every file hash would hit SQLite's bound-parameter limit on big commits);
+    # push the commit scope into SQL if the metadata table grows very large.
+    matches = {m.target_hash: m.stats for m in session.scalars(query)}
+    return sorted((path, h, matches[h]) for path, h in files.items() if h in matches)

@@ -3,6 +3,7 @@ import getpass
 import hashlib
 import os
 import json
+import mimetypes
 import tempfile
 from datetime import datetime, timezone
 
@@ -76,8 +77,9 @@ def push(remote_url, message, author):
     if new_files:
         register_files(remote_url, [
             {"file_hash": fh, "size": size, "chunker": chunker.CHUNKER,
-             "chunks": [{"hash": h, "length": n} for h, _, n in chunks]}
-            for fh, (_, size, chunks) in new_files.items()
+             "chunks": [{"hash": h, "length": n} for h, _, n in chunks],
+             "stats": _file_stats(path)}
+            for fh, (path, size, chunks) in new_files.items()
         ])
 
     result = create_commit(remote_url, {
@@ -141,7 +143,7 @@ def pull(remote_url, force):
         raise click.ClickException(
             "Local changes would be overwritten (push them, or pull --force):\n  " + "\n  ".join(conflicts))
 
-    # ponytail: downloads every changed file in full; reuse chunks from the old local copy if bandwidth matters
+    # downloads every changed file in full; reuse chunks from the old local copy if bandwidth matters
     downloaded = 0
     for full, file_hash in to_write.items():
         downloaded += _download_file(remote_url, file_hash, full)
@@ -154,6 +156,13 @@ def pull(remote_url, force):
     click.echo(f"Files:  {len(to_write)} updated, {len(to_delete)} removed")
     click.echo(f"Bytes:  {downloaded} downloaded")
     click.echo(f"Commit: {head}")
+
+
+def _file_stats(path):
+    """Metadata for a new file (row count, schema, or metrics.json values); None if unknown format or unreadable."""
+    from metadata.extractor import extract_metrics  # lazy: pandas/pyarrow only load when pushing new files
+    stats = extract_metrics(path, mimetypes.guess_type(path)[0] or "")
+    return None if stats.get("status") in ("failed", "unknown_format") else stats
 
 
 def _read_head():
@@ -215,17 +224,14 @@ def log(remote_url):
 @click.argument("remote_url")
 @click.argument("query_str")
 def query(remote_url, query_str):
-    """Query metadata using DSL 'metric operator value'."""
-    try:
-        response = query_metadata(remote_url, query_str)
-        results = response.get("results", [])
-        if not results:
-            click.echo("No matching metadata found.")
-            return
-        for res in results:
-            click.echo(f"Object: {res['target_hash']} | Metrics: {res['stats']}")
-    except Exception as e:
-        click.echo(f"Error executing query: {str(e)}")
+    """Filters the latest commit's files by a stat, e.g. 'accuracy > 0.9' or 'row_count > 1000'."""
+    response = query_metadata(remote_url.rstrip("/"), query_str)
+    results = response.get("results", [])
+    if not results:
+        click.echo("No matching files in the latest commit.")
+        return
+    for res in results:
+        click.echo(f"{res['path']} | {res['stats']}")
 
 if __name__ == '__main__':
     cli()

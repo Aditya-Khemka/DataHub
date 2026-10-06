@@ -192,3 +192,22 @@ def test_pull_keeps_local_edits_to_files_the_remote_did_not_change(client, monke
     monkeypatch.chdir(b)
     run("pull", REMOTE)
     assert (b / "x.txt").read_text() == "x2 local, unpushed" and not (b / "z.txt").exists()
+
+
+def test_push_sends_stats_and_query_finds_paths(client, monkeypatch, tmp_path):
+    """metrics.json and CSV stats are extracted by the CLI on push and searchable by path."""
+    monkeypatch.setattr(api, "http", client)
+    _copy(tmp_path, monkeypatch, "a", {
+        "models/metrics.json": '{"accuracy": 0.94, "loss": 0.05}',
+        "data/train.csv": "x,y\n" + "".join(f"{i},{i * 2}\n" for i in range(1500)),
+        "notes.txt": "no stats for unknown formats",
+    })
+    assert run("push", REMOTE)[0] == 0
+
+    code, out = run("query", REMOTE, "accuracy > 0.9")
+    assert code == 0 and out.startswith("models/metrics.json | ") and "0.94" in out
+    code, out = run("query", REMOTE, "row_count > 1000")
+    assert code == 0 and out.startswith("data/train.csv | ") and "1500" in out
+    assert run("query", REMOTE, "accuracy > 0.99")[1].strip() == "No matching files in the latest commit."
+    code, out = run("query", REMOTE, "nonsense")
+    assert code == 1 and "Server error 400" in out
